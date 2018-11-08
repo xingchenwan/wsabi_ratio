@@ -2,9 +2,12 @@ from ratio_extension.test_functions import *
 import matplotlib.pyplot as plt
 
 if __name__ == "__main__":
-    means = np.array([[-5], [2], [5]])
-    variances = np.array([[1], [2], [1.5]])
-    a = GaussMixture(means, variances)
+    a = GaussMixture([-5, 2], [4, 2])
     a.plot([-10, 0.01, 10])
     plt.show()
-    print(a.evidence_integral(np.array([0]), np.array([1])))
+
+    b = GaussMixture([2, 3], [1, 2])
+
+    posterior = predictive_integral(a, b, prior_mean=0, prior_var=1) / \
+                evidence_integral(a, prior_mean=0, prior_var=1)
+    print(posterior)
