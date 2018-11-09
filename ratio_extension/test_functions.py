@@ -10,13 +10,27 @@ import matplotlib.pyplot as plt
 from typing import Union
 
 
-class GaussMixture:
+class TrueFunctions:
+    def __init__(self, ):
+        self.dimensions = None
+
+    def sample(self, x: Union[np.ndarray, float, list]):
+        x = np.asarray(x)
+        if x.ndim == 0 or x.ndim == 1:
+            assert self.dimensions == 1, "Scalar input is only permitted if the function is of dimension!"
+        else:
+            assert x.ndim == 2
+            assert x.shape[1] == self.dimensions, "Dimension of function is of"+str(self.dimensions)+\
+                                                  " ,but the dimension of input is "+str(x.shape[1])
+
+
+class GaussMixture(TrueFunctions):
     """
     A test function consists of a mixture (summation) of Gaussians (so used because it allows the evaluation of
     the integration exactly as a benchmark for other quadrature methods.
     """
     def __init__(self, means: Union[np.ndarray, float, list], covs: Union[np.ndarray, float, list],):
-
+        super(GaussMixture, self).__init__()
         self.means = np.asarray(means)
         self.covs = np.asarray(covs)
         assert self.means.shape[0] == self.covs.shape[0], "Mean and Covariance List mismatch!"
@@ -26,13 +40,28 @@ class GaussMixture:
             self.dimensions = self.means.shape[1]
         self.mixture_count = len(self.means)
 
-    def sample(self, x, ):
-        y = 0
-        for i in range(self.mixture_count):
-            if self.dimensions == 1:
-                y += self.one_d_normal(x, self.means[i], self.covs[i])
-            else:
-                y += self.multi_d_gauss(x, self.means[i], self.covs[i])
+    def sample(self, x: Union[np.ndarray, float, list], ):
+        """
+        Sample from the true function either with one query point or a list of points
+        :param x: the coordinate(s) of the query point(s)
+        :return: the value of the true function evaluated at the query point(s)
+        """
+        x = np.asarray(x)
+        if x.ndim <= 1:
+            y = 0
+            for i in range(self.mixture_count):
+                if self.dimensions == 1:
+                    y += self.one_d_normal(x, self.means[i], self.covs[i])
+                else:
+                    y += self.multi_d_gauss(x, self.means[i], self.covs[i])
+        else:
+            y = np.zeros((x.shape[0], ))
+            for j in range(x.shape[0]):
+                for i in range(self.mixture_count):
+                    if self.dimensions == 1:
+                        y[j] += self.one_d_normal(x, self.means[i], self.covs[i])
+                    else:
+                        y[j] += self.multi_d_gauss(x, self.means[i], self.covs[i])
         return y
 
     @staticmethod
