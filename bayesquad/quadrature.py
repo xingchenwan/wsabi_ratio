@@ -1,4 +1,5 @@
 """Provides a model of the integrand, with the capability to perform Bayesian quadrature."""
+# Modified by Xingchen Wan to adapt to the WSABI for ratio project
 
 from typing import Tuple
 
@@ -11,6 +12,7 @@ from .decorators import flexible_array_dimensions
 from .gps import WarpedGP, WsabiLGP
 from .maths_helpers import jacobian_of_f_squared_times_g, hessian_of_f_squared_times_g
 from .priors import Gaussian, Prior
+from ratio_extension.prior_1d import Gaussian1D
 
 
 class IntegrandModel:
@@ -77,7 +79,6 @@ class IntegrandModel:
 
         prior = self.prior(x)
         prior_jacobian, _ = self.prior.gradient(x)
-
         return jacobian_of_f_squared_times_g(
             f=prior, f_jacobian=prior_jacobian,
             g=gp_variance, g_jacobian=gp_variance_jacobian)
@@ -142,6 +143,8 @@ class IntegrandModel:
         """Compute the mean of the integral of the function under this model."""
         if isinstance(self.prior, Gaussian) and isinstance(self.warped_gp.kernel, RBF):
             return self._compute_mean(self.prior, self.warped_gp, self.warped_gp.kernel)
+        elif isinstance(self.prior, Gaussian1D) and isinstance(self.warped_gp.kernel, RBF):
+            return self._compute_mean_1d(self.prior, self.warped_gp, self.warped_gp.kernel)
         else:
             raise NotImplementedError()
 
@@ -183,6 +186,11 @@ class IntegrandModel:
         K = np.exp(-k / 2)
 
         return alpha + (np.linalg.det(2 * np.pi * np.linalg.inv(C)) ** 0.5) / 2 * (A.T @ (K * L) @ A)
+
+    @staticmethod
+    # Xingchen Wan addition - for 1D Gaussian prior
+    def _compute_mean_1d(prior: Gaussian1D, gp: WarpedGP, kernel: RBF) -> float:
+        pass
 
 
 """

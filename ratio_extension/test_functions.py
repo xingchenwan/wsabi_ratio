@@ -11,17 +11,58 @@ from typing import Union
 
 
 class TrueFunctions:
+    """Abstract class for True Functions"""
     def __init__(self, ):
         self.dimensions = None
 
     def sample(self, x: Union[np.ndarray, float, list]):
+        pass
+
+    def _sample_test(self, x: Union[np.ndarray, float, list]):
         x = np.asarray(x)
         if x.ndim == 0 or x.ndim == 1:
             assert self.dimensions == 1, "Scalar input is only permitted if the function is of dimension!"
         else:
+            # If plotting a list of points, the ndim of the supplied x np array must be 2
             assert x.ndim == 2
-            assert x.shape[1] == self.dimensions, "Dimension of function is of"+str(self.dimensions)+\
-                                                  " ,but the dimension of input is "+str(x.shape[1])
+            assert x.shape[1] == self.dimensions, "Dimension of function is of" + str(self.dimensions) + \
+                                                  " ,but the dimension of input is " + str(x.shape[1])
+        return x
+
+    def plot(self, plot_range: tuple = (-10., 0.01, 10.)):
+        assert self.dimensions <= 2, "Plotting higher dimension functions are not supperted!"
+        range_min, range_step, range_max = plot_range[0], plot_range[1], plot_range[2]
+        plot_x = np.arange(range_min, range_max, range_step + 0.0)
+        plot_y = np.array([self.sample(x) for x in plot_x])
+        plt.plot(plot_x, plot_y)
+
+
+class ProductOfGaussianMixture(TrueFunctions):
+    """
+    A test function that is product of n Gaussian mixtures (defined below)
+    """
+    def __init__(self, *gauss_mixtures: TrueFunctions):
+        super(ProductOfGaussianMixture, self).__init__()
+        gauss_mixtures_dims = []
+        for each_mixture in gauss_mixtures:
+            assert isinstance(each_mixture, GaussMixture), "Invalid Type: GaussMixture object(s) expected"
+            gauss_mixtures_dims.append(each_mixture.dimensions)
+        assert len(set(gauss_mixtures_dims)) == 1, "There are different dimensions in the GaussMixture objects!"
+        self.dimensions = gauss_mixtures_dims[0]
+        self.gauss_mixtures = gauss_mixtures
+        self.gauss_mixtures_count = len(gauss_mixtures)
+
+    def sample(self, x: Union[np.ndarray, float, list]):
+        x = self._sample_test(x)
+        if x.ndim <= 1:
+            y_s = np.array([each_mixture.sample(x) for each_mixture in self.gauss_mixtures])
+            return np.prod(y_s)
+        else:
+            y_s = []
+            for j in range(x.shape[0]):
+                y_s.append([each_mixture.sample(x[j]) for each_mixture in self.gauss_mixtures])
+            y_s = np.asarray(y_s)
+            return np.prod(y_s, axis=1)
 
 
 class GaussMixture(TrueFunctions):
@@ -29,10 +70,10 @@ class GaussMixture(TrueFunctions):
     A test function consists of a mixture (summation) of Gaussians (so used because it allows the evaluation of
     the integration exactly as a benchmark for other quadrature methods.
     """
-    def __init__(self, means: Union[np.ndarray, float, list], covs: Union[np.ndarray, float, list],):
+    def __init__(self, means: Union[np.ndarray, float, list], covariances: Union[np.ndarray, float, list], ):
         super(GaussMixture, self).__init__()
         self.means = np.asarray(means)
-        self.covs = np.asarray(covs)
+        self.covs = np.asarray(covariances)
         assert self.means.shape[0] == self.covs.shape[0], "Mean and Covariance List mismatch!"
         if self.means.ndim == 1:
             self.dimensions = 1
@@ -46,7 +87,7 @@ class GaussMixture(TrueFunctions):
         :param x: the coordinate(s) of the query point(s)
         :return: the value of the true function evaluated at the query point(s)
         """
-        x = np.asarray(x)
+        x = self._sample_test(x)
         if x.ndim <= 1:
             y = 0
             for i in range(self.mixture_count):
@@ -55,28 +96,24 @@ class GaussMixture(TrueFunctions):
                 else:
                     y += self.multi_d_gauss(x, self.means[i], self.covs[i])
         else:
+            x = np.squeeze(x, axis=1)
             y = np.zeros((x.shape[0], ))
-            for j in range(x.shape[0]):
-                for i in range(self.mixture_count):
-                    if self.dimensions == 1:
-                        y[j] += self.one_d_normal(x, self.means[i], self.covs[i])
-                    else:
-                        y[j] += self.multi_d_gauss(x, self.means[i], self.covs[i])
+            for i in range(self.mixture_count):
+                if self.dimensions == 1:
+                    y += self.one_d_normal(x, self.means[i], self.covs[i])
+                else:
+                    y += self.multi_d_gauss(x, self.means[i], self.covs[i])
         return y
 
     @staticmethod
-    def one_d_normal(x, mean, var):
-        return norm.pdf(x, mean, var)
+    def one_d_normal(x: np.ndarray, mean, var) -> np.ndarray:
+        assert x.ndim == 1
+        return np.array([norm.pdf(x[i], mean, var) for i in range(x.shape[0])])
 
     @staticmethod
-    def multi_d_gauss(x, mean, cov):
-        return multivariate_normal.pdf(x, mean=mean, cov=cov)
-
-    def plot(self, plot_range: list):
-        range_min, range_step, range_max = plot_range[0], plot_range[1], plot_range[2]
-        plot_x = np.arange(range_min, range_max, range_step + 0.0)
-        plot_y = np.array([self.sample(x) for x in plot_x])
-        plt.plot(plot_x, plot_y)
+    def multi_d_gauss(x: np.ndarray, mean, cov) -> np.ndarray:
+        assert x.ndim == 2
+        return np.array([multivariate_normal.pdf(x[i], mean=mean, cov=cov) for i in range(x.shape[0])])
 
     def add_gaussian(self, means: Union[np.ndarray, float], var: Union[np.ndarray, float]):
         assert means.shape == self.means.shape[1:]
