@@ -1,9 +1,9 @@
 # Xingchen Wan | 2018
-# Implementation of the naive Bayesian quadrature for ratios using WSABI
+# Implementation of the naive Bayesian quadrature for ratios using WSABI/original BQ/Monte Carlo Techniques
 
-from bayesquad.quadrature import IntegrandModel
+from bayesquad.quadrature import WarpedIntegrandModel, OriginalIntegrandModel
 from bayesquad.batch_selection import select_batch
-from bayesquad.gps import WsabiLGP
+from bayesquad.gps import WsabiLGP, GP
 from bayesquad.priors import Prior
 from ratio_extension.test_functions import TrueFunctions
 import numpy as np
@@ -22,21 +22,53 @@ class NaiveMethods(ABC):
         self.p = p
 
         self.results = None
+        self.options = {}
+        self.selected_points = []
+        self.evaluated_den_points = []
+        self.evaluated_num_points = []
 
-    @abstractmethod
-    def quadrature(self) -> np.float: pass
+    def quadrature(self, display_step=1):
+        for i in range(self.options['num_batches']):
+            res = self._batch_iterate()
+            # print(self.results[i])
+            if i % display_step == 0:
+                print("Step: "+str(i)+": "+str(res))
+            self.results[i] = res
+        return self.results[-1]
 
     def plot_result(self, true_value: float):
         if np.nan in self.results:
             raise ValueError("Quadrature has not been run!")
         res = np.array(self.results)
-        rmse = (res - true_value) ** 2
-        plt.plot(rmse)
+        res = np.squeeze(res,)
+
+        xi = np.arange(0, self.options['num_batches'], 1)
+        plt.subplot(211)
+
+        rmse = np.sqrt((res - true_value) ** 2)
+        plt.loglog(xi, rmse, ".")
         plt.xlabel("Number of batches")
         plt.ylabel("RMSE")
 
+        plt.subplot(212)
+        plt.semilogx(xi, res, ".")
+        plt.axhline(true_value)
+        plt.xlabel("Number of batches")
+        plt.ylabel("Result")
+        plt.ylim(0, 1)
+
     @abstractmethod
     def initialise_gp(self): pass
+
+    @abstractmethod
+    def _batch_iterate(self): pass
+
+    def plot_samples(self,):
+        if len(self.selected_points) == 0:
+            raise ValueError('Quadrature has not been run yet!')
+        plt.plot(self.selected_points, self.evaluated_den_points, 'x', color='b', label='Evaluated $r(\phi)$')
+        plt.plot(self.selected_points, self.evaluated_num_points, 'x', color='r', label='Evaluated $r(\phi)q(\phi)$')
+        plt.legend()
 
 
 class NaiveWSABI(NaiveMethods):
@@ -74,19 +106,27 @@ class NaiveWSABI(NaiveMethods):
         # Active sampling by minimising the variance of the *integrand*, and then update the corresponding Gaussian
         # Process
         batch_phi = select_batch(self.model_den, self.options['batch_size'], "Local Penalisation")
+        self.selected_points += batch_phi
+
         r_sample = self.r.sample(batch_phi)
-        batch_y_den = np.sqrt(r_sample)
+        # p_sample = self.p(np.array(batch_phi))
+        q_sample = self.q.sample(batch_phi)
+
+        batch_y_den = r_sample
+        self.evaluated_den_points.append(batch_y_den)
+        # batch_y_den = np.sqrt(r_sample)
         self.model_den.update(batch_phi, batch_y_den)
         self.gpy_gp_den.optimize()
-        batch_y_num = np.sqrt(r_sample * self.q.sample(batch_phi))
+        # batch_y_num = np.sqrt(r_sample * self.q.sample(batch_phi))
+        batch_y_num = batch_y_den * q_sample
+        self.evaluated_num_points.append(batch_y_num)
         self.model_num.update(batch_phi, batch_y_num)
         self.gpy_gp_num.optimize()
-        return self.model_num.integral_mean() / self.model_den.integral_mean()
 
-    def quadrature(self):
-        for i in range(self.options['num_batches']):
-            self.results[i] = self._batch_iterate()
-        return self.results[-1]
+        num_integral_mean = self.model_num.integral_mean()
+        den_integral_mean = self.model_den.integral_mean()
+        print(batch_phi, num_integral_mean, den_integral_mean)
+        return num_integral_mean / den_integral_mean
 
     def initialise_gp(self):
         """
@@ -103,16 +143,17 @@ class NaiveWSABI(NaiveMethods):
 
         self.gpy_gp_den = GPy.core.GP(init_x, init_y_den,
                                       kernel=self.options['kernel'], likelihood=self.options['likelihood'])
+
         warped_gp = WsabiLGP(self.gpy_gp_den)
-        self.model_den = IntegrandModel(warped_gp, self.p)
+        self.model_den = WarpedIntegrandModel(warped_gp, self.p)
         self.gpy_gp_num = GPy.core.GP(init_x, init_y_num,
                                       kernel=self.options['kernel'], likelihood=self.options['likelihood'])
-        self.model_num = IntegrandModel(WsabiLGP(self.gpy_gp_num), self.p)
+        self.model_num = WarpedIntegrandModel(WsabiLGP(self.gpy_gp_num), self.p)
 
     def _unpack_options(self, kernel: GPy.kern.Kern = None,
                         likelihood: GPy.likelihoods = GPy.likelihoods.Gaussian(variance=1e-10),
-                        batch_size: int = 4,
-                        num_batches: int = 25) -> dict:
+                        batch_size: int = 1,
+                        num_batches: int = 100) -> dict:
         if kernel is None:
             kernel = GPy.kern.RBF(self.dim, variance=2, lengthscale=2)
         return {
@@ -132,28 +173,31 @@ class NaiveBQ(NaiveMethods):
         super(NaiveBQ, self).__init__(r, q, p)
         self.gpy_gp_den = None
         self.gpy_gp_num = None
+        self.model_den = None
+        self.model_num = None
         self.options = self._unpack_options(**options)
+        self.initialise_gp()
+        self.results = [np.nan] * self.options["num_batches"]
 
     def initialise_gp(self):
         init_x = np.zeros((self.dim,))
         init_y_den = self.r.sample(init_x)
         if init_x.ndim <= 1:
             init_x = init_x.reshape(1, init_x.shape[0])
-            r_sample = init_y_den.reshape(1, init_y_den.shape[0])
+            init_y_den = init_y_den.reshape(1, init_y_den.shape[0])
         init_y_num = init_y_den * self.q.sample(init_x)
 
         self.gpy_gp_den = GPy.core.GP(init_x, init_y_den, kernel=self.options['kernel'],
                                       likelihood=self.options['likelihood'])
         self.gpy_gp_num = GPy.core.GP(init_x, init_y_num, kernel=self.options['kernel'],
-                                      likelihood=self.options['likerlihood'])
-
-    def _batch_iterate(self):
-        pass
+                                      likelihood=self.options['likelihood'])
+        self.model_den = OriginalIntegrandModel(GP(self.gpy_gp_den), self.p)
+        self.model_num = OriginalIntegrandModel(GP(self.gpy_gp_num), self.p)
 
     def _unpack_options(self, kernel: GPy.kern.Kern = None,
                         likelihood: GPy.likelihoods = GPy.likelihoods.Gaussian(variance=1e-10),
-                        batch_size: int = 4,
-                        num_batches: int = 25) -> dict:
+                        batch_size: int = 1,
+                        num_batches: int = 100) -> dict:
         if kernel is None:
             kernel = GPy.kern.RBF(self.dim, variance=2, lengthscale=2)
         return {
@@ -163,9 +207,40 @@ class NaiveBQ(NaiveMethods):
             'num_batches': num_batches
         }
 
-    def _integral_mean(self):
+    def _batch_iterate(self):
+        batch_phi = select_batch(self.model_den, self.options['batch_size'], 'Local Penalisation')
+        self.selected_points += batch_phi
+        batch_y_den = self.r.sample(batch_phi)
+        batch_y_num = batch_y_den * self.q.sample(batch_phi)
+        self.model_den.update(batch_phi, batch_y_den)
+        self.model_num.update(batch_phi, batch_y_num)
+        self.gpy_gp_num.optimize()
+        self.gpy_gp_den.optimize()
+        self.evaluated_den_points.append(batch_y_den)
+        self.evaluated_num_points.append(batch_y_num)
+        num_integral_mean = self.model_num.integral_mean()
+        den_integral_dean = self.model_den.integral_mean()
+        print(num_integral_mean, den_integral_dean)
+        return num_integral_mean / den_integral_dean
+
+
+class NaiveMonteCarlo(NaiveMethods):
+    """
+    An implementation of Monte Carlo integration using random sampling
+    """
+    def __init__(self, r: TrueFunctions, q: TrueFunctions, p: Prior, **options):
+        super(NaiveMonteCarlo, self).__init__(r, q, p)
+        self.options = self._unpack_options(**options)
+
+    def _batch_iterate(self):
         pass
 
+    def quadrature(self, display_step):
+        pass
 
-class NaiveMonteCarlo:
-    pass
+    def _unpack_options(self, num_batches: int = 100,
+                        sampling_interval: tuple = (-10, 10)) -> dict:
+        return {
+            'num_batches': num_batches,
+            'sampling_interval': sampling_interval
+        }

@@ -15,7 +15,7 @@ class TrueFunctions:
     def __init__(self, ):
         self.dimensions = None
 
-    def sample(self, x: Union[np.ndarray, float, list]):
+    def sample(self, x: Union[np.ndarray, float, list]) -> np.ndarray:
         pass
 
     def _sample_test(self, x: Union[np.ndarray, float, list]):
@@ -29,12 +29,12 @@ class TrueFunctions:
                                                   " ,but the dimension of input is " + str(x.shape[1])
         return x
 
-    def plot(self, plot_range: tuple = (-10., 0.01, 10.)):
+    def plot(self, plot_range: tuple = (-3., 0.01, 3.), **matplot_options):
         assert self.dimensions <= 2, "Plotting higher dimension functions are not supperted!"
         range_min, range_step, range_max = plot_range[0], plot_range[1], plot_range[2]
         plot_x = np.arange(range_min, range_max, range_step + 0.0)
-        plot_y = np.array([self.sample(x) for x in plot_x])
-        plt.plot(plot_x, plot_y)
+        plot_y = np.array(self.sample(plot_x))
+        plt.plot(plot_x, plot_y, **matplot_options)
 
 
 class ProductOfGaussianMixture(TrueFunctions):
@@ -56,6 +56,7 @@ class ProductOfGaussianMixture(TrueFunctions):
         x = self._sample_test(x)
         if x.ndim <= 1:
             y_s = np.array([each_mixture.sample(x) for each_mixture in self.gauss_mixtures])
+            print(y_s)
             return np.prod(y_s)
         else:
             y_s = []
@@ -70,16 +71,26 @@ class GaussMixture(TrueFunctions):
     A test function consists of a mixture (summation) of Gaussians (so used because it allows the evaluation of
     the integration exactly as a benchmark for other quadrature methods.
     """
-    def __init__(self, means: Union[np.ndarray, float, list], covariances: Union[np.ndarray, float, list], ):
+    def __init__(self, means: Union[np.ndarray, float, list], covariances: Union[np.ndarray, float, list],
+                 weights: Union[np.ndarray, list, float]=None):
         super(GaussMixture, self).__init__()
+
         self.means = np.asarray(means)
         self.covs = np.asarray(covariances)
-        assert self.means.shape[0] == self.covs.shape[0], "Mean and Covariance List mismatch!"
+        self.mixture_count = len(self.means)
+
         if self.means.ndim == 1:
             self.dimensions = 1
         else:
             self.dimensions = self.means.shape[1]
-        self.mixture_count = len(self.means)
+        if weights is None:
+            # For unspecified weights, each individual Gaussian distribution within the mixture will receive
+            # an equal weight
+            weights = np.array([1./self.mixture_count]*self.mixture_count)
+        self.weights = np.asarray(weights)
+        assert self.means.shape[0] == self.covs.shape[0], "Mean and Covariance List mismatch!"
+        assert self.means.shape[0] == self.weights.shape[0]
+        assert self.weights.ndim <= 1, "Weight vector must be a 1D array!"
 
     def sample(self, x: Union[np.ndarray, float, list], ):
         """
@@ -92,17 +103,17 @@ class GaussMixture(TrueFunctions):
             y = 0
             for i in range(self.mixture_count):
                 if self.dimensions == 1:
-                    y += self.one_d_normal(x, self.means[i], self.covs[i])
+                    y += self.weights[i] * self.one_d_normal(x, self.means[i], self.covs[i])
                 else:
-                    y += self.multi_d_gauss(x, self.means[i], self.covs[i])
+                    y += self.weights[i] * self.multi_d_gauss(x, self.means[i], self.covs[i])
         else:
             x = np.squeeze(x, axis=1)
             y = np.zeros((x.shape[0], ))
             for i in range(self.mixture_count):
                 if self.dimensions == 1:
-                    y += self.one_d_normal(x, self.means[i], self.covs[i])
+                    y += self.weights[i] * self.one_d_normal(x, self.means[i], self.covs[i])
                 else:
-                    y += self.multi_d_gauss(x, self.means[i], self.covs[i])
+                    y += self.weights[i] * self.multi_d_gauss(x, self.means[i], self.covs[i])
         return y
 
     @staticmethod
@@ -115,11 +126,15 @@ class GaussMixture(TrueFunctions):
         assert x.ndim == 2
         return np.array([multivariate_normal.pdf(x[i], mean=mean, cov=cov) for i in range(x.shape[0])])
 
-    def add_gaussian(self, means: Union[np.ndarray, float], var: Union[np.ndarray, float]):
+    def add_gaussian(self, means: Union[np.ndarray, float], var: Union[np.ndarray, float], weight: Union[np.ndarray, float]):
         assert means.shape == self.means.shape[1:]
         assert var.shape == self.covs.shape[1:]
         self.means = np.append(self.means, means)
         self.covs = np.append(self.covs, var)
+        self.weights = np.append(self.weights, weight)
+
+    def _rebase_weight(self):
+        self.weights = self.weights / np.sum(self.weights)
 
 
 def evidence_integral(gauss_mix: GaussMixture,
@@ -141,8 +156,9 @@ def evidence_integral(gauss_mix: GaussMixture,
     for i in range(gauss_mix.mixture_count):
         mu = gauss_mix.means[i]
         sigma = gauss_mix.covs[i]
+        weight = gauss_mix.weights[i]
         _, _, scaling_factor = gauss_product(mu, prior_mean, sigma, prior_var)
-        res += scaling_factor
+        res += scaling_factor * weight
     return res
 
 
@@ -169,12 +185,14 @@ def predictive_integral(gauss_mix_1: GaussMixture, gauss_mix_2: GaussMixture,
     for i in range(gauss_mix_1.mixture_count):
         mu1 = gauss_mix_1.means[i]
         sigma1 = gauss_mix_1.covs[i]
+        weight1 = gauss_mix_1.weights[i]
         for j in range(gauss_mix_2.mixture_count):
             mu2 = gauss_mix_2.means[j]
             sigma2 = gauss_mix_2.covs[j]
+            weight2 = gauss_mix_2.weights[j]
             mu_product, sigma_product, scale_product = gauss_product(mu1, mu2, sigma1, sigma2)
             _, _, scale_with_prior = gauss_product(mu_product, prior_mean, sigma_product, prior_var)
-            res += scale_with_prior * scale_product
+            res += scale_with_prior * scale_product * weight1 * weight2
     return res
 
 

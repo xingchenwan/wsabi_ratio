@@ -11,7 +11,7 @@ import bayesquad.plotting as plotting
 from bayesquad.batch_selection import select_batch, LOCAL_PENALISATION
 from bayesquad.gps import WsabiLGP
 from bayesquad.priors import Gaussian
-from bayesquad.quadrature import IntegrandModel
+from bayesquad.quadrature import WarpedIntegrandModel
 
 
 # Set up test function and WSABI-L model.
@@ -31,7 +31,7 @@ prior = Gaussian(mean=np.array([0, 0]), covariance=2*np.eye(2))
 
 gpy_gp = GPy.core.GP(initial_x, initial_y, kernel=k, likelihood=lik)
 warped_gp = WsabiLGP(gpy_gp)
-model = IntegrandModel(warped_gp, prior)
+model = WarpedIntegrandModel(warped_gp, prior)
 
 
 def true_integrand(x):
@@ -82,7 +82,7 @@ def plot_true_function():
     plot_data(z, 133, "True Integrand")
 
 
-def plot_integrand_posterior(integrand_model: IntegrandModel):
+def plot_integrand_posterior(integrand_model: WarpedIntegrandModel):
     z = integrand_model.posterior_mean_and_variance(PLOTTING_DOMAIN)[0]
     plot_data(z, 132, "Posterior Mean")
 

@@ -15,8 +15,13 @@ class Gaussian1D(Prior):
         self.precision = 1 / self.variance
         self._normal = norm
 
+        # Just to make the mean and variance amenable to matrix operations
+        self.matrix_variance = np.array([[variance]])
+        self.matrix_mean = np.array([[mean]])
+        self.matrix_precision = np.array([[1./variance]])
+
     def sample(self,) -> np.ndarray:
-        res = norm.rvs(loc=self.mean, scale=self.variance)
+        res = norm.rvs(loc=self.mean, scale=np.sqrt(self.variance))
         return np.array([res])
 
     def gradient(self, x: Union[float, list, np.ndarray]):

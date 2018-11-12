@@ -261,6 +261,10 @@ class GP:
     def _clear_cache(self, *args, **kwargs):
         clear_last_value_caches(self)
 
+    @property
+    def kernel(self) -> GPy.kern.Kern:
+        return self._gpy_gp.kern
+
 
 class WarpedGP(ABC):
     """Represents a Gaussian Process where the output space has been warped.
