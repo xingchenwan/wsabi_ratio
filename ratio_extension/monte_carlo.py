@@ -6,6 +6,8 @@ from ratio_extension.naive_quadratures import NaiveMethods
 from ratio_extension.test_functions import TrueFunctions
 from bayesquad.priors import Prior
 from typing import Union
+import matplotlib.pyplot as plt
+
 
 class MonteCarlo(NaiveMethods):
     """
@@ -17,34 +19,36 @@ class MonteCarlo(NaiveMethods):
         self.options = self._unpack_options(**options)
         self.sample_count = self.options['num_batches']
         self.widths = self.options['width']
-        # Set up a container for all the samples
-        self.samples = np.zeros((self.dim, self.sample_count))
         self.iterations = 0
+        self.results = np.zeros(self.options['num_batches'])
+        # Set up a container for all the samples
+        self.selected_points = np.zeros((self.sample_count, 2, self.dim))
 
-    def _batch_iterate(self, display_step: int = 5, x: np.ndarray = None):
+    def _batch_iterate(self, x: np.ndarray = None,
+                       prior: Prior = None, *fns: TrueFunctions, prev_log_prob: float = None,
+                       display_step: int = 5):
         self.iterations += 1
         perm = range(self.dim)
         np.random.shuffle(perm)
-        print(x)
-        last_log_prob = self._log_probability(self.q, x)
+        log_prob = prev_log_prob if prev_log_prob is not None else self._eval_fns_log(x, self.p, *fns)
         x_l = x.copy()
         x_r = x.copy()
         x_prime = x.copy()
         for dd in perm:
-            last_log_prob_perturbed = last_log_prob + np.log(np.random.rand())
+            log_prob_perturbed = log_prob + np.log(np.random.rand())
             # Perturb by log probability of the last likelihood by a random number in the range of (0, 1)
-            rdm = np.random.rand(1)
-            x_l[dd] -= rdm * self.widths[dd]
-            x_r[dd] -= (1-rdm) * self.widths[dd]
+            rdm = np.random.rand()
+            x_l[dd] = x[dd] - rdm * self.widths[dd]
+            x_r[dd] = x[dd] + (1-rdm) * self.widths[dd]
             if self.options['step_out']:
-                while self._log_probability(self.q, x_l) > last_log_prob_perturbed:
+                while self._eval_fns_log(x_l, self.p, *fns) > log_prob_perturbed:
                     x_l[dd] -= self.widths[dd]
-                while self._log_probability(self.q, x_r) > last_log_prob_perturbed:
-                    x_r[dd] -= self.widths[dd]
+                while self._eval_fns_log(x_r, self.p, *fns) > log_prob_perturbed:
+                    x_r[dd] += self.widths[dd]
             while True:
                 x_prime[dd] = np.random.rand() * (x_r[dd] - x_l[dd]) + x_l[dd]
-                log_prob_x_prime = self._log_probability(self.q, x_prime)
-                if log_prob_x_prime > last_log_prob_perturbed:
+                log_prob_x_prime = self._eval_fns_log(x_prime, self.p, *fns)
+                if log_prob_x_prime > log_prob_perturbed:
                     break
                 else:
                     if x_prime[dd] > x[dd]:
@@ -56,42 +60,104 @@ class MonteCarlo(NaiveMethods):
             x[dd] = x_prime[dd]
             x_l[dd] = x_prime[dd]
             x_r[dd] = x_prime[dd]
-        if self.iterations % display_step == 0:
-            print("Iteration "+str(self.iterations)+": "+str(x))
-        return x
+        y = self._eval_fns_log(x, self.p, *fns)
+        return x, y
 
-    def quadrature(self, display_step=1):
-        samples = []
-        x = self.options['initial_point']
-        for i in range(self.options['num_batches']):
-            new_x = self._batch_iterate(x=x)
-            samples.append(new_x)
-            x = new_x
-            print(x)
-        return x.sum() / (self.options['num_batches'] + .0)
-
-    def _log_probability(self, func: TrueFunctions, x: np.ndarray) -> np.ndarray:
-        if x.ndim == 2:
-            assert x.shape[1] == self.dim
-        else:
-            assert self.dim == 1
-        res = np.zeros(x.shape)
-        for i in range(x.shape[0]):
-            res[i, :] = np.log(func.sample(x[i]))
+    @staticmethod
+    def _eval_fns_log(x: np.ndarray, prior: Prior, *funcs: TrueFunctions):
+        """
+        Evaluate the function:
+        $
+        g = \prod f(\phi) p(\phi)
+        $
+        at x
+        :param x: query point for function evaluation
+        :param prior: p(\phi)
+        :param funcs: one or more functions in term of x
+        :return:
+        """
+        res = 0.
+        for each_func in funcs:
+            res += each_func.log_sample(x)
+        res += np.log(prior(x))
         return res
 
+    def quadrature(self,):
+        """
+        The quadrature process models the numerator and denominator separately, and hence there are two sample acquisi-
+        tion processes and so the random numbers generated in the numerator and denominator in each step are different
+        from each other. At each step, the volume by evaluating the maximum and minimum value of the samples acquired
+        across all dimensions is also computed which is used to approximate the integral value.
+        :return: float - the final evaluated integral ratio at the last evaluation step
+        """
+        x_num = self.options['initial_point']
+        x_den = x_num.copy()
+        y_num = None
+        y_den = None
+        for i in range(self.options['num_batches']):
+            x_num_prime, y_num_prime = self._batch_iterate(x_num, self.p, self.r, self.q, prev_log_prob=y_num)
+            x_den_prime, y_den_prime = self._batch_iterate(x_den, self.p, self.r, prev_log_prob=y_den)
+            self.selected_points[i, 0, :] = x_num_prime.copy()
+            self.selected_points[i, 1, :] = x_den_prime.copy()
+            self.evaluated_num_points.append(np.exp(y_num_prime))
+            self.evaluated_den_points.append(np.exp(y_den_prime))
+
+            x_num = x_num_prime
+            x_den = x_den_prime
+            y_num = y_num_prime
+            y_den = y_den_prime
+            vol_num, vol_den = self._find_volume()
+            num_integral_mean = np.sum(self.evaluated_num_points) * vol_num
+            den_integral_mean = np.sum(self.evaluated_den_points) * vol_den
+            if i >= self.options['burn_in']:
+                self.results[i] = num_integral_mean / den_integral_mean
+                if i % self.options['display_step'] == 1:
+                    print("Iteration " + str(i) + ": " + str(self.results[i]))
+                    print('Numerator Integral Mean: '+ str(num_integral_mean/i))
+                    print('Denominator Integral Mean:' + str(den_integral_mean/i))
+                    if self.options['plot_iterations']:
+                        self.draw_samples(i)
+                        self.plot_true_integrands()
+                        plt.show()
+            else:
+                self.results[i] = np.nan
+        return self.results[-1]
+
+    def _find_volume(self,):
+        """
+        Compute the volume (or the higher dimensional equivalent for volume) for the Monte Carlo integration
+        :return: tuple of two floats for the denominator and numerator
+        """
+        vol_num = 1
+        vol_den = 1
+        if len(self.selected_points) == 0:
+            return 0, 0
+        for i in range(self.dim):
+            num_dim_slice = self.selected_points[:, 0, i]
+            den_dim_slice = self.selected_points[:, 1, i]
+            vol_num *= max(num_dim_slice) - min(num_dim_slice)
+            vol_den *= max(den_dim_slice) - min(den_dim_slice)
+        # print(vol_num, vol_den)
+        return vol_num, vol_den
+
     def _unpack_options(self,
-                        num_batches: int = 100,
+                        num_batches: int = 1000,
                         width: Union[float, np.ndarray] = 1.,
                         step_out: bool = True,
-                        initial_point: np.ndarray = None) -> dict:
+                        initial_point: np.ndarray = None,
+                        plot_iterations: bool = False,
+                        display_step: int = 10,
+                        burn_in: int = None,
+                        ) -> dict:
         """
         Unpack optional keyword arguments supplied
         :param num_batches: Number of samples in the Monte Carlo method
-        :param width:
-        :param step_out:
+        :param width: the size of "jump" between successive steps of MCMC
+        :param step_out: as per Neal's paper (2003) on improving slice sampling
         :param initial_point: Initial sampling point of the method. Default value is the origin in the d-dimensional
         space where d is the dimensionality of the input space
+        :param plot_iterations: whether to enable the visualisation of the sample acquisition process
+        :param burn_in: number of initial samples to be discarded
         :return: dictionary for use of the object
         """
         if initial_point is not None:
@@ -101,15 +167,35 @@ class MonteCarlo(NaiveMethods):
             initial_point = np.array([[0.]*self.dim])
         if isinstance(width, float):
             width = np.array([width])
+        if burn_in is None:
+            burn_in = min(50, int(num_batches * 0.1))
         return {
             'num_batches': num_batches,
             'width': width,
             'step_out': step_out,
-            'initial_point': initial_point
+            'initial_point': initial_point,
+            'plot_iterations': plot_iterations,
+            'display_step': display_step,
+            'burn_in': burn_in
         }
 
     def initialise_gp(self):
         raise TypeError("Invalid method for Monte Carlo quadrature!")
 
-    def draw_samples(self):
-        raise TypeError("Invalid method for Monte Carlo quadrature!")
+    def draw_samples(self, i=0):
+        """Visualise the sample acquisition process in the Monte Carlo Sampler"""
+        if i <= 2:
+            return
+        selected_pts = self.selected_points[:i+1, :, :]
+        plt.subplot(211)
+        plt.plot(selected_pts[:-self.options['display_step'], 1, 0],
+                 self.evaluated_den_points[:-self.options['display_step']], "x", color='grey')
+        plt.plot(selected_pts[-self.options['display_step']:, 1, 0],
+                 self.evaluated_den_points[-self.options['display_step']:], "x", color='red')
+        plt.title("Draws from Denominator Posterior")
+        plt.subplot(212)
+        plt.plot(selected_pts[:-self.options['display_step'], 0, 0],
+                 self.evaluated_num_points[:-self.options['display_step']], "x", color='grey')
+        plt.plot(selected_pts[-self.options['display_step']:, 0, 0],
+                 self.evaluated_num_points[-self.options['display_step']:], "x", color='red')
+        plt.title("Draws from Numerator Posterior")

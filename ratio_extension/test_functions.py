@@ -18,6 +18,9 @@ class TrueFunctions:
     def sample(self, x: Union[np.ndarray, float, list]) -> np.ndarray:
         pass
 
+    def log_sample(self, x:Union[np.ndarray, float, list]) -> np.ndarray:
+        return np.log(self.sample(x))
+
     def _sample_test(self, x: Union[np.ndarray, float, list]):
         x = np.asarray(x)
         if x.ndim == 0 or x.ndim == 1:

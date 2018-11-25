@@ -31,11 +31,11 @@ class NaiveMethods(ABC):
         self.gpy_gp_num = None
         self.step_count = 0
 
-    def quadrature(self, display_step=1):
+    def quadrature(self):
         for i in range(self.options['num_batches']):
             res = self._batch_iterate()
             # print(self.results[i])
-            if i % display_step == 0:
+            if i % self.options['display_step'] == 0:
                 print("Step: "+str(i)+": "+str(res))
             self.results[i] = res
         return self.results[-1]
@@ -65,7 +65,7 @@ class NaiveMethods(ABC):
     def initialise_gp(self): pass
 
     @abstractmethod
-    def _batch_iterate(self, display_step:int = None): pass
+    def _batch_iterate(self,): pass
 
     def plot_samples(self,):
         if len(self.selected_points) == 0:
@@ -76,6 +76,15 @@ class NaiveMethods(ABC):
 
     @abstractmethod
     def draw_samples(self): pass
+
+    def plot_true_integrands(self, plot_range=(-5, 5, 0.1)):
+        x_i = np.arange(*plot_range).reshape(-1, 1)
+        plt.subplot(211)
+        y_i = self.r.sample(x_i) * self.p(x_i)
+        plt.plot(x_i, y_i)
+        plt.subplot(212)
+        y_ii = y_i * self.q.sample(x_i)
+        plt.plot(x_i, y_ii)
 
 
 class NaiveWSABI(NaiveMethods):
@@ -109,7 +118,7 @@ class NaiveWSABI(NaiveMethods):
         self.results = [np.nan] * self.options["num_batches"]
         self.initialise_gp()
 
-    def _batch_iterate(self, display_step: int = 5):
+    def _batch_iterate(self,):
         # Active sampling by minimising the variance of the *integrand*, and then update the corresponding Gaussian
         # Process
         self.step_count += 1
@@ -133,10 +142,11 @@ class NaiveWSABI(NaiveMethods):
 
         num_integral_mean = self.model_num.integral_mean()
         den_integral_mean = self.model_den.integral_mean()
-        if self.step_count % display_step == 0:
+        if self.step_count % self.options['display_step'] == 0:
             print(batch_phi, "Numerator: ", num_integral_mean, "Denominator", den_integral_mean)
-            self.draw_samples()
-            plt.show()
+            if self.options['plot_iterations']:
+                self.draw_samples()
+                plt.show()
         return num_integral_mean / den_integral_mean
 
     def initialise_gp(self):
@@ -164,14 +174,18 @@ class NaiveWSABI(NaiveMethods):
     def _unpack_options(self, kernel: GPy.kern.Kern = None,
                         likelihood: GPy.likelihoods = GPy.likelihoods.Gaussian(variance=1e-10),
                         batch_size: int = 1,
-                        num_batches: int = 100) -> dict:
+                        num_batches: int = 100,
+                        plot_iterations: bool = False,
+                        display_step: int = 10) -> dict:
         if kernel is None:
             kernel = GPy.kern.RBF(self.dim, variance=2, lengthscale=2)
         return {
             "kernel": kernel,
             "likelihood": likelihood,
             'batch_size': batch_size,
-            'num_batches': num_batches
+            'num_batches': num_batches,
+            'plot_iterations': plot_iterations,
+            'display_step': display_step
         }
 
     def draw_samples(self,
@@ -226,17 +240,21 @@ class NaiveBQ(NaiveMethods):
     def _unpack_options(self, kernel: GPy.kern.Kern = None,
                         likelihood: GPy.likelihoods = GPy.likelihoods.Gaussian(variance=1e-10),
                         batch_size: int = 1,
-                        num_batches: int = 100) -> dict:
+                        num_batches: int = 100,
+                        display_step: int = 10,
+                        plot_iterations: bool = False) -> dict:
         if kernel is None:
             kernel = GPy.kern.RBF(self.dim, variance=2, lengthscale=2)
         return {
             "kernel": kernel,
             "likelihood": likelihood,
             'batch_size': batch_size,
-            'num_batches': num_batches
+            'num_batches': num_batches,
+            'plot_iterations': plot_iterations,
+            'display_step': display_step
         }
 
-    def _batch_iterate(self, display_step=10):
+    def _batch_iterate(self,):
         self.step_count += 1
         batch_phi = select_batch(self.model_den, self.options['batch_size'], 'Kriging Believer')
         self.selected_points += batch_phi
@@ -250,10 +268,11 @@ class NaiveBQ(NaiveMethods):
         self.evaluated_num_points.append(batch_y_num)
         num_integral_mean = self.model_num.integral_mean()
         den_integral_dean = self.model_den.integral_mean()
-        if self.step_count % display_step == 0:
+        if self.step_count % self.options['display_step'] == 0:
             print("Numerator: ", num_integral_mean, "Denominator: ",den_integral_dean)
-            self.draw_samples()
-            plt.show()
+            if self.options['plot_iterations']:
+                self.draw_samples()
+                plt.show()
         return num_integral_mean / den_integral_dean
 
     def draw_samples(self,

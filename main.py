@@ -5,6 +5,7 @@ from bayesquad.priors import Gaussian
 from ratio_extension.prior_1d import Gaussian1D
 from ratio_extension.monte_carlo import MonteCarlo
 
+
 def plot_gauss_mix(r: GaussMixture, q: GaussMixture):
     r.plot(label='$r(\phi) = p(z_d|\phi)$')
     q.plot(label='$q(\phi) = p(y_*|z_d, \phi)$')
@@ -28,8 +29,10 @@ if __name__ == "__main__":
     #naive_wsabi.plot_result(prediction / evidence)
     #plt.show()
 
-    mcmc = MonteCarlo(r, q, prior, num_batches=100)
+    mcmc = MonteCarlo(r, q, prior, num_batches=500, plot_iterations=True, display_step=20)
     mcmc.quadrature()
+    mcmc.plot_result(prediction / evidence)
+    plt.show()
     #plot_gauss_mix(r, q)
     #naive_wsabi.plot_samples()
     #plt.show()
