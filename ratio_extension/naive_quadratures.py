@@ -27,6 +27,10 @@ class NaiveMethods(ABC):
         self.evaluated_den_points = []
         self.evaluated_num_points = []
 
+        self.gpy_gp_den = None
+        self.gpy_gp_num = None
+        self.step_count = 0
+
     def quadrature(self, display_step=1):
         for i in range(self.options['num_batches']):
             res = self._batch_iterate()
@@ -61,7 +65,7 @@ class NaiveMethods(ABC):
     def initialise_gp(self): pass
 
     @abstractmethod
-    def _batch_iterate(self): pass
+    def _batch_iterate(self, display_step:int = None): pass
 
     def plot_samples(self,):
         if len(self.selected_points) == 0:
@@ -69,6 +73,9 @@ class NaiveMethods(ABC):
         plt.plot(self.selected_points, self.evaluated_den_points, 'x', color='b', label='Evaluated $r(\phi)$')
         plt.plot(self.selected_points, self.evaluated_num_points, 'x', color='r', label='Evaluated $r(\phi)q(\phi)$')
         plt.legend()
+
+    @abstractmethod
+    def draw_samples(self): pass
 
 
 class NaiveWSABI(NaiveMethods):
@@ -102,9 +109,10 @@ class NaiveWSABI(NaiveMethods):
         self.results = [np.nan] * self.options["num_batches"]
         self.initialise_gp()
 
-    def _batch_iterate(self, ):
+    def _batch_iterate(self, display_step: int = 5):
         # Active sampling by minimising the variance of the *integrand*, and then update the corresponding Gaussian
         # Process
+        self.step_count += 1
         batch_phi = select_batch(self.model_den, self.options['batch_size'], "Local Penalisation")
         self.selected_points += batch_phi
 
@@ -125,7 +133,10 @@ class NaiveWSABI(NaiveMethods):
 
         num_integral_mean = self.model_num.integral_mean()
         den_integral_mean = self.model_den.integral_mean()
-        print(batch_phi, num_integral_mean, den_integral_mean)
+        if self.step_count % display_step == 0:
+            print(batch_phi, "Numerator: ", num_integral_mean, "Denominator", den_integral_mean)
+            self.draw_samples()
+            plt.show()
         return num_integral_mean / den_integral_mean
 
     def initialise_gp(self):
@@ -162,6 +173,24 @@ class NaiveWSABI(NaiveMethods):
             'batch_size': batch_size,
             'num_batches': num_batches
         }
+
+    def draw_samples(self,
+                     sample_count=5, ):
+        if self.gpy_gp_den is None or self.gpy_gp_num is None:
+            raise ValueError("The GPy.GP instances need to be instantiated first!")
+        test_locations = np.linspace(-5, 5, 200).reshape(-1, 1)
+        posterior_den = self.gpy_gp_den.posterior_samples_f(test_locations, size=sample_count)
+        posterior_num = self.gpy_gp_num.posterior_samples_f(test_locations, size=sample_count)
+        plt.subplot(211)
+        plt.plot(test_locations, posterior_den)
+        plt.plot(self.selected_points[:-1], self.evaluated_den_points[:-1], "x", color='grey')
+        plt.plot(self.selected_points[-1], self.evaluated_den_points[-1], "x", color='red')
+        plt.title("Draws from Denominator Posterior")
+        plt.subplot(212)
+        plt.plot(test_locations, posterior_num)
+        plt.plot(self.selected_points[:-1], self.evaluated_num_points[:-1], "x", color='grey')
+        plt.plot(self.selected_points[-1], self.evaluated_num_points[-1], "x", color='red')
+        plt.title("Draws from Numerator Posterior")
 
 
 class NaiveBQ(NaiveMethods):
@@ -207,8 +236,9 @@ class NaiveBQ(NaiveMethods):
             'num_batches': num_batches
         }
 
-    def _batch_iterate(self):
-        batch_phi = select_batch(self.model_den, self.options['batch_size'], 'Local Penalisation')
+    def _batch_iterate(self, display_step=10):
+        self.step_count += 1
+        batch_phi = select_batch(self.model_den, self.options['batch_size'], 'Kriging Believer')
         self.selected_points += batch_phi
         batch_y_den = self.r.sample(batch_phi)
         batch_y_num = batch_y_den * self.q.sample(batch_phi)
@@ -220,27 +250,26 @@ class NaiveBQ(NaiveMethods):
         self.evaluated_num_points.append(batch_y_num)
         num_integral_mean = self.model_num.integral_mean()
         den_integral_dean = self.model_den.integral_mean()
-        print(num_integral_mean, den_integral_dean)
+        if self.step_count % display_step == 0:
+            print("Numerator: ", num_integral_mean, "Denominator: ",den_integral_dean)
+            self.draw_samples()
+            plt.show()
         return num_integral_mean / den_integral_dean
 
-
-class NaiveMonteCarlo(NaiveMethods):
-    """
-    An implementation of Monte Carlo integration using random sampling
-    """
-    def __init__(self, r: TrueFunctions, q: TrueFunctions, p: Prior, **options):
-        super(NaiveMonteCarlo, self).__init__(r, q, p)
-        self.options = self._unpack_options(**options)
-
-    def _batch_iterate(self):
-        pass
-
-    def quadrature(self, display_step):
-        pass
-
-    def _unpack_options(self, num_batches: int = 100,
-                        sampling_interval: tuple = (-10, 10)) -> dict:
-        return {
-            'num_batches': num_batches,
-            'sampling_interval': sampling_interval
-        }
+    def draw_samples(self,
+                     sample_count=5, ):
+        if self.gpy_gp_den is None or self.gpy_gp_num is None:
+            raise ValueError("The GPy.GP instances need to be instantiated first!")
+        test_locations = np.linspace(-5, 5, 200).reshape(-1, 1)
+        posterior_den = self.gpy_gp_den.posterior_samples_f(test_locations, size=sample_count)
+        posterior_num = self.gpy_gp_num.posterior_samples_f(test_locations, size=sample_count)
+        plt.subplot(211)
+        plt.plot(test_locations, posterior_den)
+        plt.plot(self.selected_points[:-1], self.evaluated_den_points[:-1], "x", color='grey')
+        plt.plot(self.selected_points[-1], self.evaluated_den_points[-1], "x", color='red')
+        plt.title("Draws from Denominator Posterior")
+        plt.subplot(212)
+        plt.plot(test_locations, posterior_num)
+        plt.plot(self.selected_points[:-1], self.evaluated_num_points[:-1], "x", color='grey')
+        plt.plot(self.selected_points[-1], self.evaluated_num_points[-1], "x", color='red')
+        plt.title("Draws from Numerator Posterior")

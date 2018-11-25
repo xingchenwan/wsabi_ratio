@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from ratio_extension.naive_quadratures import NaiveWSABI, NaiveBQ
 from bayesquad.priors import Gaussian
 from ratio_extension.prior_1d import Gaussian1D
-
+from ratio_extension.monte_carlo import MonteCarlo
 
 def plot_gauss_mix(r: GaussMixture, q: GaussMixture):
     r.plot(label='$r(\phi) = p(z_d|\phi)$')
@@ -23,20 +23,22 @@ if __name__ == "__main__":
     evidence = evidence_integral(r, prior_mean=0, prior_var=1)
     print(prediction, evidence, prediction/evidence)
 
-    #naive_wsabi = NaiveWSABI(r, q, prior, num_batches=200)
+    #naive_wsabi = NaiveWSABI(r, q, prior, num_batches=100)
     #naive_wsabi.quadrature()
     #naive_wsabi.plot_result(prediction / evidence)
     #plt.show()
 
+    mcmc = MonteCarlo(r, q, prior, num_batches=100)
+    mcmc.quadrature()
     #plot_gauss_mix(r, q)
     #naive_wsabi.plot_samples()
     #plt.show()
 
-    naive_bq = NaiveBQ(r, q, prior, num_batches=100, batch_size=1)
-    naive_bq.quadrature()
-    naive_bq.plot_result(prediction / evidence)
-    plt.show()
+    #naive_bq = NaiveBQ(r, q, prior, num_batches=100, batch_size=1)
+    #naive_bq.quadrature()
+    #naive_bq.plot_result(prediction / evidence)
+    #plt.show()
 
-    plot_gauss_mix(r, q)
-    naive_bq.plot_samples()
-    plt.show()
+    #plot_gauss_mix(r, q)
+    #naive_bq.plot_samples()
+    #plt.show()
