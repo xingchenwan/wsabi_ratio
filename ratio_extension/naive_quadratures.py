@@ -13,7 +13,8 @@ from abc import ABC, abstractmethod
 
 
 class NaiveMethods(ABC):
-    def __init__(self, r: TrueFunctions, q: TrueFunctions, p: Prior):
+    def __init__(self, r: TrueFunctions, q: TrueFunctions, p: Prior,
+                 true_prediction_integral: float=None, true_evidence_integral: float=None):
         assert r.dimensions == q.dimensions, \
             "The dimensions of the numerator and denominator do not match!"
         self.dim = r.dimensions
@@ -31,6 +32,11 @@ class NaiveMethods(ABC):
         self.gpy_gp_num = None
         self.step_count = 0
 
+        # Ground truth integral values
+        self.true_prediction_integral = true_prediction_integral
+        self.true_evidence_integral = true_evidence_integral
+        self.true_ratio = self.true_prediction_integral / self.true_evidence_integral
+
     def quadrature(self):
         for i in range(self.options['num_batches']):
             res = self._batch_iterate()
@@ -40,7 +46,11 @@ class NaiveMethods(ABC):
             self.results[i] = res
         return self.results[-1]
 
-    def plot_result(self, true_value: float):
+    def plot_result(self,):
+        approx_only = False
+        if self.true_ratio is None:
+            print("Ground truth values are not supplied - plotting the quadrature approximations only.")
+            approx_only = True
         if np.nan in self.results:
             raise ValueError("Quadrature has not been run!")
         res = np.array(self.results)
@@ -49,14 +59,16 @@ class NaiveMethods(ABC):
         xi = np.arange(0, self.options['num_batches'], 1)
         plt.subplot(211)
 
-        rmse = np.sqrt((res - true_value) ** 2)
-        plt.loglog(xi, rmse, ".")
-        plt.xlabel("Number of batches")
-        plt.ylabel("RMSE")
+        if approx_only is False:
+            rmse = np.sqrt((res - self.true_ratio) ** 2)
+            plt.loglog(xi, rmse, ".")
+            plt.xlabel("Number of batches")
+            plt.ylabel("RMSE")
 
         plt.subplot(212)
         plt.semilogx(xi, res, ".")
-        plt.axhline(true_value)
+        if approx_only is False:
+            plt.axhline(self.true_ratio)
         plt.xlabel("Number of batches")
         plt.ylabel("Result")
         plt.ylim(0, 1)
@@ -77,14 +89,33 @@ class NaiveMethods(ABC):
     @abstractmethod
     def draw_samples(self): pass
 
-    def plot_true_integrands(self, plot_range=(-5, 5, 0.1)):
+    def plot_true_integrands(self, plot_range=(-5, 5, 0.1), numerator=False):
+        """
+        Generate plots for the ground truth integrands
+        :param plot_range:
+        :param numerator:
+        :return:
+        """
         x_i = np.arange(*plot_range).reshape(-1, 1)
-        plt.subplot(211)
         y_i = self.r.sample(x_i) * self.p(x_i)
+        if numerator is False:
+            plt.plot(x_i, y_i)
+        else:
+            y_ii = y_i * self.q.sample(x_i)
+            plt.plot(x_i, y_ii)
+
+    def plot_parameter_posterior(self, plot_range=(-5, 5, 0.1)):
+        """
+        Generate plots for the ground truth paramter posterior
+        :param plot_range:
+        :return:
+        """
+        if self.true_evidence_integral is None:
+            print("True evidence integral is not supplied - plotting is not possible")
+            return
+        x_i = np.arange(*plot_range).reshape(-1, 1)
+        y_i = self.r.sample(x_i) * self.p(x_i) / self.true_evidence_integral
         plt.plot(x_i, y_i)
-        plt.subplot(212)
-        y_ii = y_i * self.q.sample(x_i)
-        plt.plot(x_i, y_ii)
 
 
 class NaiveWSABI(NaiveMethods):
@@ -105,8 +136,9 @@ class NaiveWSABI(NaiveMethods):
     """
 
     def __init__(self, r: TrueFunctions, q: TrueFunctions, p: Prior,
+                 true_prediction_integral: float = None, true_evidence_integral: float = None,
                  **options):
-        super(NaiveWSABI, self).__init__(r, q, p)
+        super(NaiveWSABI, self).__init__(r, q, p, true_prediction_integral, true_evidence_integral)
 
         # Initialise the GPy GP instances and the WSABI-L model for the numerator and denominator integrands
         self.gpy_gp_den = None
@@ -212,8 +244,10 @@ class NaiveBQ(NaiveMethods):
     Direct implementation of the Bayesiqn Quadrature method applied independently to both the numerator and denominator
     integrals without warping the output space as in WSABI methods.
     """
-    def __init__(self, r: TrueFunctions, q: TrueFunctions, p: Prior, **options):
-        super(NaiveBQ, self).__init__(r, q, p)
+    def __init__(self, r: TrueFunctions, q: TrueFunctions, p: Prior,
+                 true_prediction_integral: float = None, true_evidence_integral: float = None,
+                 **options):
+        super(NaiveBQ, self).__init__(r, q, p, true_prediction_integral, true_evidence_integral)
         self.gpy_gp_den = None
         self.gpy_gp_num = None
         self.model_den = None

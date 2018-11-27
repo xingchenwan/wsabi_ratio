@@ -17,30 +17,35 @@ def plot_gauss_mix(r: GaussMixture, q: GaussMixture):
 if __name__ == "__main__":
     r = GaussMixture(means=[-1, 2], covariances=[0.7, 2], weights=[0.1, 0.2])
 
-    q = GaussMixture([0.5, 1.5, -1.5, -0.5, 0.2], [100, 1, 0.5, 0.6, 1], weights=[1, 0.6, 0.5, 0.7, -0.1])
+    q = GaussMixture([0.5, 1.5, -1.5, -0.3, 0.2], [100, 1, 0.4, 0.2, 1], weights=[1, 0.5, 0.5, 0.2, -0.1])
     prior = Gaussian(mean=np.array([[0]]), covariance=np.array([[1]]))
 
     prediction = predictive_integral(r, q, prior_mean=0, prior_var=1)
     evidence = evidence_integral(r, prior_mean=0, prior_var=1)
     print(prediction, evidence, prediction/evidence)
 
-    #naive_wsabi = NaiveWSABI(r, q, prior, num_batches=100)
-    #naive_wsabi.quadrature()
-    #naive_wsabi.plot_result(prediction / evidence)
+    #naive_bq = NaiveBQ(r, q, prior, num_batches=200, batch_size=1, plot_iterations=True,
+    #                   true_prediction_integral=prediction, true_evidence_integral=evidence)
+    #naive_bq.quadrature()
+    #naive_bq.plot_result()
     #plt.show()
 
-    mcmc = MonteCarlo(r, q, prior, num_batches=500, plot_iterations=True, display_step=20)
+    naive_wsabi = NaiveWSABI(r, q, prior, num_batches=200, display_step=50, plot_iterations=True,
+                             true_prediction_integral=prediction, true_evidence_integral=evidence)
+    naive_wsabi.quadrature()
+    naive_wsabi.plot_result()
+    plt.show()
+
+    mcmc = MonteCarlo(r, q, prior, true_prediction_integral=prediction, true_evidence_integral=evidence,
+                      num_batches=500, plot_iterations=True, display_step=50, )
     mcmc.quadrature()
-    mcmc.plot_result(prediction / evidence)
+    mcmc.plot_result()
     plt.show()
     #plot_gauss_mix(r, q)
     #naive_wsabi.plot_samples()
     #plt.show()
 
-    #naive_bq = NaiveBQ(r, q, prior, num_batches=100, batch_size=1)
-    #naive_bq.quadrature()
-    #naive_bq.plot_result(prediction / evidence)
-    #plt.show()
+
 
     #plot_gauss_mix(r, q)
     #naive_bq.plot_samples()
