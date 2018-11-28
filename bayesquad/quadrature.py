@@ -17,6 +17,7 @@ from ratio_extension.prior_1d import Gaussian1D
 from abc import abstractmethod
 from scipy.stats import multivariate_normal, norm
 from scipy.linalg import cho_solve, cho_factor
+from GPy.util.linalg import jitchol
 
 
 class IntegrandModel:
@@ -140,6 +141,16 @@ class IntegrandModel:
     def remove_fantasies(self):
         self.gp.remove_fantasies()
 
+    @staticmethod
+    def compute_covariance(x: np.ndarray, kernel: RBF) -> tuple:
+        assert x.ndim <= 2
+        if x.ndim == 1:
+            x = x.reshape(-1, 1)
+        K_xx = kernel.K(x)
+        K_xx_cho = jitchol(K_xx)
+        cholesky_inv = np.linalg.inv(K_xx_cho)
+        K_xx_inv = cholesky_inv.T @ cholesky_inv
+        return K_xx, K_xx_inv
 
 class WarpedIntegrandModel(IntegrandModel):
     """Represents the product of a warped Gaussian Process and a prior.
@@ -255,15 +266,30 @@ class OriginalIntegrandModel(IntegrandModel):
             g=gp_variance, g_jacobian=gp_variance_jacobian, g_hessian=gp_variance_hessian)
 
     @staticmethod
-    def _compute_mean(prior: Union[Gaussian, Gaussian1D], gp: GP, kernel: RBF) -> float:
-        # todo: add the support to compute the variance of the quadrature estimation as well.
+    def _compute_mean(prior: Union[Gaussian, Gaussian1D], gp: GP, kernel: RBF,
+                      X_D: np.ndarray=None, Y_D: Union[np.ndarray, int]=None):
+        """
+        Compute the mean (i.e. expectation) of the integral
+        :param prior: Prior
+        :param gp: GP
+        :param kernel: type of kernel - for now only the RBF kernel is supported
+        :param X_D: Query points - if this argument is not supplied the evaluated points of the Gaussian process will
+        be used
+        :param Y_D: The functional value at X_D. Note that -1 is a special value. If Y_D is -1 is supplied, we are
+        not interested in finding out the integral expectation but rather only interested in finding the inverse of the
+        covariance matrix and value of vector n_s
+        :return: mean: mean value of the integral, K_xx_inv: inverse of the full covariance matrix,n_s: the vector
+        defined in Equation 7.1.7 in Mike's DPhil dissertation
+        """
         from GPy.util.linalg import jitchol
         # w, h are the lengthscale and variance of the RBF kernel - see Equation 7.1.4 in Mike's DPhil Dissertation
         w = kernel.lengthscale.values[0]
         h = kernel.variance.values[0]
 
-        X_D = gp._gpy_gp.X
-        Y_D = gp._gpy_gp.Y
+        if X_D is None:
+            X_D = gp._gpy_gp.X
+        if Y_D is None:
+            Y_D = gp._gpy_gp.Y
         n, d = X_D.shape
         # n: number of samples, d: dimensionality of each sample
 
@@ -295,10 +321,28 @@ class OriginalIntegrandModel(IntegrandModel):
         K_xx_cho = jitchol(K_xx,)
         choleksy_inverse = np.linalg.inv(K_xx_cho)
         K_xx_inv = choleksy_inverse.T @ choleksy_inverse
-        mean = n_s.T @ K_xx_inv @ Y_D
-        return mean
+        if isinstance(Y_D, int) and Y_D == -1:
+            return np.nan, K_xx_inv, n_s
+        else:
+            mean = n_s.T @ K_xx_inv @ Y_D
+            return mean, K_xx_inv, n_s
 
-
+    def sample_histogram(self, x: np.ndarray, sample_count=50,):
+        assert x.ndim <= 2
+        if x.ndim == 1:
+            x = x.reshape(-1, 1)
+        n, d = x.shape
+        ys = self.gp.posterior_samples_f(x, size=sample_count)
+        if d == 1:
+            ys = ys.reshape(ys.shape[0], 1, ys.shape[1])
+            # print(ys.shape)
+        assert ys.shape == (n, d, sample_count)
+        res = np.zeros((sample_count, ))
+        _, K_xx_inv, n_s = self._compute_mean(prior=self.prior, gp=self.gp, kernel=self.gp.kernel, X_D=x, Y_D=-1)
+        # Find the inverse of K_xx matrix via Cholesky decomposition (with jitter)
+        for j in range(ys.shape[2]):
+            res[j] = n_s.T @ K_xx_inv @ ys[:, :, j]
+        return res, ys
 
 
 """

@@ -9,6 +9,7 @@ from ratio_extension.test_functions import TrueFunctions
 import numpy as np
 import GPy
 import matplotlib.pyplot as plt
+import seaborn as sns
 from abc import ABC, abstractmethod
 
 
@@ -24,13 +25,15 @@ class NaiveMethods(ABC):
 
         self.results = None
         self.options = {}
-        self.selected_points = []
-        self.evaluated_den_points = []
-        self.evaluated_num_points = []
+
 
         self.gpy_gp_den = None
         self.gpy_gp_num = None
         self.step_count = 0
+
+        self.selected_points = None
+        self.evaluated_den_points = None
+        self.evaluated_num_points = None
 
         # Ground truth integral values
         self.true_prediction_integral = true_prediction_integral
@@ -150,35 +153,39 @@ class NaiveWSABI(NaiveMethods):
         self.results = [np.nan] * self.options["num_batches"]
         self.initialise_gp()
 
+        self.selected_points = np.zeros((self.options['num_batches'], self.dim))
+        self.evaluated_den_points = np.zeros(self.options['num_batches'])
+        self.evaluated_num_points = self.evaluated_den_points.copy()
+
     def _batch_iterate(self,):
         # Active sampling by minimising the variance of the *integrand*, and then update the corresponding Gaussian
         # Process
-        self.step_count += 1
-        batch_phi = select_batch(self.model_den, self.options['batch_size'], "Local Penalisation")
-        self.selected_points += batch_phi
+        batch_phi = select_batch(self.model_den, self.options['batch_size'], "Kriging Believer")
+        self.selected_points[self.step_count, :] = batch_phi
 
         r_sample = self.r.sample(batch_phi)
         # p_sample = self.p(np.array(batch_phi))
         q_sample = self.q.sample(batch_phi)
 
         batch_y_den = r_sample
-        self.evaluated_den_points.append(batch_y_den)
+        self.evaluated_den_points[self.step_count] = batch_y_den
         # batch_y_den = np.sqrt(r_sample)
         self.model_den.update(batch_phi, batch_y_den)
         self.gpy_gp_den.optimize()
         # batch_y_num = np.sqrt(r_sample * self.q.sample(batch_phi))
         batch_y_num = batch_y_den * q_sample
-        self.evaluated_num_points.append(batch_y_num)
+        self.evaluated_num_points[self.step_count] = batch_y_num
         self.model_num.update(batch_phi, batch_y_num)
         self.gpy_gp_num.optimize()
 
-        num_integral_mean = self.model_num.integral_mean()
-        den_integral_mean = self.model_den.integral_mean()
+        num_integral_mean, _, _ = self.model_num.integral_mean()
+        den_integral_mean, _, _ = self.model_den.integral_mean()
         if self.step_count % self.options['display_step'] == 0:
             print(batch_phi, "Numerator: ", num_integral_mean, "Denominator", den_integral_mean)
             if self.options['plot_iterations']:
                 self.draw_samples()
                 plt.show()
+        self.step_count += 1
         return num_integral_mean / den_integral_mean
 
     def initialise_gp(self):
@@ -208,16 +215,19 @@ class NaiveWSABI(NaiveMethods):
                         batch_size: int = 1,
                         num_batches: int = 100,
                         plot_iterations: bool = False,
-                        display_step: int = 10) -> dict:
+                        display_step: int = 10,
+                        plot_range: tuple = (-5, 5, 0.1)) -> dict:
         if kernel is None:
             kernel = GPy.kern.RBF(self.dim, variance=2, lengthscale=2)
+        assert len(plot_range) == 3, "Supply a plot range in the format of (start, end, step)"
         return {
             "kernel": kernel,
             "likelihood": likelihood,
             'batch_size': batch_size,
             'num_batches': num_batches,
             'plot_iterations': plot_iterations,
-            'display_step': display_step
+            'display_step': display_step,
+            'plot_range': plot_range,
         }
 
     def draw_samples(self,
@@ -227,15 +237,19 @@ class NaiveWSABI(NaiveMethods):
         test_locations = np.linspace(-5, 5, 200).reshape(-1, 1)
         posterior_den = self.gpy_gp_den.posterior_samples_f(test_locations, size=sample_count)
         posterior_num = self.gpy_gp_num.posterior_samples_f(test_locations, size=sample_count)
+        selected_pts = self.selected_points[:self.step_count]
+        evaluated_den_points = self.evaluated_den_points[:self.step_count + 1]
+        evaluated_num_points = self.evaluated_num_points[:self.step_count + 1]
+
         plt.subplot(211)
         plt.plot(test_locations, posterior_den)
-        plt.plot(self.selected_points[:-1], self.evaluated_den_points[:-1], "x", color='grey')
-        plt.plot(self.selected_points[-1], self.evaluated_den_points[-1], "x", color='red')
+        plt.plot(selected_pts[:-1], evaluated_den_points[:-1], "x", color='grey')
+        plt.plot(selected_pts[-1], evaluated_den_points[-1], "x", color='red')
         plt.title("Draws from Denominator Posterior")
         plt.subplot(212)
         plt.plot(test_locations, posterior_num)
-        plt.plot(self.selected_points[:-1], self.evaluated_num_points[:-1], "x", color='grey')
-        plt.plot(self.selected_points[-1], self.evaluated_num_points[-1], "x", color='red')
+        plt.plot(selected_pts[:-1], evaluated_num_points[:-1], "x", color='grey')
+        plt.plot(selected_pts[-1], evaluated_num_points[-1], "x", color='red')
         plt.title("Draws from Numerator Posterior")
 
 
@@ -255,6 +269,10 @@ class NaiveBQ(NaiveMethods):
         self.options = self._unpack_options(**options)
         self.initialise_gp()
         self.results = [np.nan] * self.options["num_batches"]
+
+        self.selected_points = np.zeros((self.options['num_batches'], self.dim))
+        self.evaluated_den_points = np.zeros(self.options['num_batches'])
+        self.evaluated_num_points = self.evaluated_den_points.copy()
 
     def initialise_gp(self):
         init_x = np.zeros((self.dim,))
@@ -276,53 +294,107 @@ class NaiveBQ(NaiveMethods):
                         batch_size: int = 1,
                         num_batches: int = 100,
                         display_step: int = 10,
+                        plot_range: tuple = (-5, 5, 0.1),
+                        histogram_sample_count: int = 50,
                         plot_iterations: bool = False) -> dict:
         if kernel is None:
             kernel = GPy.kern.RBF(self.dim, variance=2, lengthscale=2)
+        assert len(plot_range) == 3, "Supply a plot range in the format of (start, end, step)"
         return {
             "kernel": kernel,
             "likelihood": likelihood,
             'batch_size': batch_size,
             'num_batches': num_batches,
             'plot_iterations': plot_iterations,
-            'display_step': display_step
+            'display_step': display_step,
+            'plot_range': plot_range,
+            'histogram_sample_count': histogram_sample_count
         }
 
     def _batch_iterate(self,):
-        self.step_count += 1
         batch_phi = select_batch(self.model_den, self.options['batch_size'], 'Kriging Believer')
-        self.selected_points += batch_phi
+        self.selected_points[self.step_count, :] = batch_phi
         batch_y_den = self.r.sample(batch_phi)
         batch_y_num = batch_y_den * self.q.sample(batch_phi)
         self.model_den.update(batch_phi, batch_y_den)
         self.model_num.update(batch_phi, batch_y_num)
         self.gpy_gp_num.optimize()
         self.gpy_gp_den.optimize()
-        self.evaluated_den_points.append(batch_y_den)
-        self.evaluated_num_points.append(batch_y_num)
-        num_integral_mean = self.model_num.integral_mean()
-        den_integral_dean = self.model_den.integral_mean()
-        if self.step_count % self.options['display_step'] == 0:
-            print("Numerator: ", num_integral_mean, "Denominator: ",den_integral_dean)
+        self.evaluated_den_points[self.step_count] = batch_y_den
+        self.evaluated_num_points[self.step_count] = batch_y_num
+        num_integral_mean, _, _ = self.model_num.integral_mean()
+        den_integral_mean, _, _ = self.model_den.integral_mean()
+        if self.step_count % self.options['display_step'] == 1:
+            print("Numerator: ", num_integral_mean, "Denominator: ",den_integral_mean)
             if self.options['plot_iterations']:
                 self.draw_samples()
-                plt.show()
-        return num_integral_mean / den_integral_dean
+        self.step_count += 1
+        return num_integral_mean / den_integral_mean
 
-    def draw_samples(self,
-                     sample_count=5, ):
+    def draw_samples(self,):
         if self.gpy_gp_den is None or self.gpy_gp_num is None:
             raise ValueError("The GPy.GP instances need to be instantiated first!")
-        test_locations = np.linspace(-5, 5, 200).reshape(-1, 1)
-        posterior_den = self.gpy_gp_den.posterior_samples_f(test_locations, size=sample_count)
-        posterior_num = self.gpy_gp_num.posterior_samples_f(test_locations, size=sample_count)
+        x = np.arange(*self.options['plot_range']).reshape(-1, 1)
+
+        numerator_integrals, numerator_samples = self.model_num.sample_histogram(x, sample_count=self.options['histogram_sample_count'])
+        denominator_integrals, denominator_samples = self.model_den.sample_histogram(x, sample_count=self.options['histogram_sample_count'])
+        numerator_samples = np.squeeze(numerator_samples)
+        denominator_samples = np.squeeze(denominator_samples)
+
+        selected_pts = self.selected_points[:self.step_count]
+        evaluated_den_points = self.evaluated_den_points[:self.step_count]
+        evaluated_num_points = self.evaluated_num_points[:self.step_count]
+
+        #print(selected_pts)
         plt.subplot(211)
-        plt.plot(test_locations, posterior_den)
-        plt.plot(self.selected_points[:-1], self.evaluated_den_points[:-1], "x", color='grey')
-        plt.plot(self.selected_points[-1], self.evaluated_den_points[-1], "x", color='red')
-        plt.title("Draws from Denominator Posterior")
+        plt.plot(x, numerator_samples)
+        plt.plot(selected_pts[:-1], evaluated_num_points[:-1], "x", color='grey')
+        plt.plot(selected_pts[-1], evaluated_num_points[-1], "x", color='red')
+        plt.xlabel("$\phi$")
+        plt.ylabel("$q(\phi)r(\phi)$")
+
         plt.subplot(212)
-        plt.plot(test_locations, posterior_num)
-        plt.plot(self.selected_points[:-1], self.evaluated_num_points[:-1], "x", color='grey')
-        plt.plot(self.selected_points[-1], self.evaluated_num_points[-1], "x", color='red')
-        plt.title("Draws from Numerator Posterior")
+        plt.plot(x, denominator_samples)
+        plt.plot(selected_pts[:-1], evaluated_den_points[:-1], "x", color='grey')
+        plt.plot(selected_pts[-1], evaluated_den_points[-1], "x", color='red')
+        plt.xlabel("$\phi$")
+        plt.ylabel("$r(\phi)$")
+
+        plt.show()
+
+        plt.subplot(211)
+        #print(numerator_integrals)
+        sns.distplot(numerator_integrals, norm_hist=True)
+        num_integral_mean = np.mean(numerator_integrals)
+        num_integral_std = np.std(numerator_integrals)
+        plt.axvline(num_integral_mean, color='r')
+        #plt.axvline(self.true_prediction_integral, color='b')
+        plt.axvline(num_integral_mean+num_integral_std, color='gray')
+        plt.axvline(num_integral_mean-num_integral_std, color='gray')
+        plt.xlabel("$E(\int q(\phi)r(\phi)p(\phi) d\phi)$")
+        plt.yticks([])
+
+        plt.subplot(212)
+        sns.distplot(denominator_integrals, norm_hist=True)
+        den_integral_mean = np.mean(denominator_integrals)
+        den_integral_std = np.std(denominator_integrals)
+        plt.axvline(den_integral_mean, color='r')
+        #plt.axvline(self.true_evidence_integral, color='b')
+        plt.axvline(den_integral_mean + den_integral_std, color='gray')
+        plt.axvline(den_integral_mean - den_integral_std, color='gray')
+        plt.xlabel("$E(\int r(\phi)p(\phi) d\phi)$")
+        plt.yticks([])
+
+        plt.show()
+
+        ratio = numerator_integrals / denominator_integrals
+        ratio_mean = np.mean(ratio)
+        ratio_std = np.std(ratio)
+        sns.distplot(ratio, norm_hist=True)
+        plt.axvline(ratio_mean, color='r', label='Estimated Mean')
+        plt.axvline(ratio_mean-ratio_std, color='gray')
+        plt.axvline(ratio_mean+ratio_std, color='gray', label='+/- 1SD')
+        plt.axvline(self.true_ratio, color='b', label='True Mean')
+        plt.xlabel(r"$E(\frac{\int q(\phi)r(\phi)p(\phi) d\phi}{\int r(\phi)p(\phi) d\phi)})$")
+        plt.legend()
+        plt.show()

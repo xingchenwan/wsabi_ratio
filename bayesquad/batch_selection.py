@@ -62,9 +62,6 @@ def select_kriging_believer_batch(integrand_model: IntegrandModel, batch_size: i
 
         batch.append(batch_point)
         #integrand_model.fantasise(batch_point, mean_y)
-
-    #integrand_model.remove_fantasies()
-
     return batch
 
 

@@ -8,6 +8,8 @@ import numpy as np
 from scipy.stats import norm, multivariate_normal
 import matplotlib.pyplot as plt
 from typing import Union
+from bayesquad.priors import Prior
+from scipy.integrate import quad
 
 
 class TrueFunctions:
@@ -245,3 +247,21 @@ def gauss_product(mean1: Union[np.ndarray, float], mean2: Union[np.ndarray, floa
     else:
         raise ValueError("Invalid input shape")
     return product_mean, product_cov, scaling_factor
+
+
+def approx_integrals(p: Prior, q: TrueFunctions, r: TrueFunctions) -> tuple:
+    def pr(x: float) -> float:
+        x = np.array([[x]])
+        return np.asscalar(p(x) * r.sample(x))
+
+    def pqr(x: float) -> float:
+        x = np.array([[x]])
+        return np.asscalar(p(x) * q.sample(x) * r.sample(x))
+
+    integral_pr = quad(pr, -10, 10, )
+    integral_pqr = quad(pqr, -10, 10, )
+    ratio = integral_pqr[0]/integral_pr[0]
+    print("Denominator Integral:", str(integral_pr))
+    print('Numerator Integral: ', str(integral_pqr))
+    print('Ratio: ',str(ratio))
+    return integral_pqr[0], integral_pr[0], ratio
