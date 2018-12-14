@@ -152,6 +152,7 @@ class IntegrandModel:
         K_xx_inv = cholesky_inv.T @ cholesky_inv
         return K_xx, K_xx_inv
 
+
 class WarpedIntegrandModel(IntegrandModel):
     """Represents the product of a warped Gaussian Process and a prior.
 
@@ -185,7 +186,7 @@ class WarpedIntegrandModel(IntegrandModel):
             g=gp_variance, g_jacobian=gp_variance_jacobian, g_hessian=gp_variance_hessian)
 
     @staticmethod
-    def _compute_mean(prior: Union[Gaussian, Gaussian1D], gp: WarpedGP, kernel: RBF) -> float:
+    def _compute_mean(prior: Union[Gaussian, Gaussian1D], gp: WarpedGP, kernel: RBF):
         dimensions = gp.dimensions
 
         alpha = gp._alpha
@@ -228,7 +229,7 @@ class WarpedIntegrandModel(IntegrandModel):
 
         K = np.exp(-k / 2)
 
-        return alpha + (np.linalg.det(2 * np.pi * np.linalg.inv(C)) ** 0.5) / 2 * (A.T @ (K * L) @ A)
+        return alpha + (np.linalg.det(2 * np.pi * np.linalg.inv(C)) ** 0.5) / 2 * (A.T @ (K * L) @ A), None, None
 
 
 class OriginalIntegrandModel(IntegrandModel):
@@ -309,13 +310,14 @@ class OriginalIntegrandModel(IntegrandModel):
             for i in range(n):
                 n_s[i] = h * norm.pdf(X_D[i, :], loc=mu, scale=np.sqrt(W))
         else:
+            w = np.array([w]*d)
             W = sigma
             W_2 = 2 * sigma
             for i in range(d):
                 W[i, i] += w[i] ** 2
                 W_2[i, i] += w[i] ** 2
             for i in range(n):
-                n_s[i] = h * multivariate_normal(X_D[i, :], mean=mu, cov=W)
+                n_s[i] = h * multivariate_normal.pdf(X_D[i, :], mean=mu, cov=W)
         K_xx = kernel.K(X_D)
         # Find the inverse of K_xx matrix via Cholesky decomposition (with jitter)
         K_xx_cho = jitchol(K_xx,)

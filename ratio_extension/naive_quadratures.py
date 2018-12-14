@@ -235,9 +235,10 @@ class NaiveWSABI(NaiveMethods):
         if self.gpy_gp_den is None or self.gpy_gp_num is None:
             raise ValueError("The GPy.GP instances need to be instantiated first!")
         test_locations = np.linspace(-5, 5, 200).reshape(-1, 1)
-        posterior_den = self.gpy_gp_den.posterior_samples_f(test_locations, size=sample_count)
-        posterior_num = self.gpy_gp_num.posterior_samples_f(test_locations, size=sample_count)
-        selected_pts = self.selected_points[:self.step_count]
+        posterior_den = np.squeeze(self.gpy_gp_den.posterior_samples_f(test_locations, size=sample_count), axis=1)
+        posterior_num = np.squeeze(self.gpy_gp_num.posterior_samples_f(test_locations, size=sample_count), axis=1)
+        #print(posterior_den)
+        selected_pts = self.selected_points[:self.step_count+1]
         evaluated_den_points = self.evaluated_den_points[:self.step_count + 1]
         evaluated_num_points = self.evaluated_num_points[:self.step_count + 1]
 
