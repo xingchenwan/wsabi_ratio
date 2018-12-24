@@ -122,18 +122,18 @@ class IntegrandModel:
         """
         self.gp.update(x, y)
 
-    def integral_mean(self) -> float:
+    def integral_mean(self, log_transform=False) -> float:
         """Compute the mean of the integral of the function under this model."""
         if isinstance(self.prior, Gaussian) and isinstance(self.gp.kernel, RBF):
-            return self._compute_mean(self.prior, self.gp, self.gp.kernel)
+            return self._compute_mean(self.prior, self.gp, self.gp.kernel, log_transform=log_transform)
         elif isinstance(self.prior, Gaussian1D) and isinstance(self.gp.kernel, RBF):
-            return self._compute_mean(self.prior, self.gp, self.gp.kernel)
+            return self._compute_mean(self.prior, self.gp, self.gp.kernel, log_transform=log_transform)
         else:
             raise NotImplementedError()
 
     @staticmethod
     @abstractmethod
-    def _compute_mean(prior, gp, kernel) -> float: pass
+    def _compute_mean(prior, gp, kernel, log_transform=False) -> float: pass
 
     def fantasise(self, x, y):
         self.gp.fantasise(x, y)
@@ -186,7 +186,8 @@ class WarpedIntegrandModel(IntegrandModel):
             g=gp_variance, g_jacobian=gp_variance_jacobian, g_hessian=gp_variance_hessian)
 
     @staticmethod
-    def _compute_mean(prior: Union[Gaussian, Gaussian1D], gp: WarpedGP, kernel: RBF):
+    def _compute_mean(prior: Union[Gaussian, Gaussian1D], gp: WarpedGP, kernel: RBF,
+                      log_transform=False):
         dimensions = gp.dimensions
 
         alpha = gp._alpha
@@ -194,6 +195,9 @@ class WarpedIntegrandModel(IntegrandModel):
         kernel_variance = kernel.variance.values[0]
 
         X_D = gp._gp.X
+
+        if log_transform:
+            raise NotImplementedError()
 
         if isinstance(prior, Gaussian1D):
             mu = prior.matrix_mean
@@ -268,7 +272,8 @@ class OriginalIntegrandModel(IntegrandModel):
 
     @staticmethod
     def _compute_mean(prior: Union[Gaussian, Gaussian1D], gp: GP, kernel: RBF,
-                      X_D: np.ndarray=None, Y_D: Union[np.ndarray, int]=None):
+                      X_D: np.ndarray=None, Y_D: Union[np.ndarray, int]=None,
+                      log_transform=False):
         """
         Compute the mean (i.e. expectation) of the integral
         :param prior: Prior
@@ -284,15 +289,23 @@ class OriginalIntegrandModel(IntegrandModel):
         """
         from GPy.util.linalg import jitchol
         # w, h are the lengthscale and variance of the RBF kernel - see Equation 7.1.4 in Mike's DPhil Dissertation
-        w = kernel.lengthscale.values[0]
-        h = kernel.variance.values[0]
 
+        if log_transform is True:
+            w = np.exp(kernel.lengthscale.values[0])
+            h = np.exp(kernel.variance.values[0])
+        else:
+            w = kernel.lengthscale.values[0]
+            h = kernel.variance.values[0]
+
+        print("kerLengthScale: ", kernel.lengthscale.values[0], 'kerVar: ', kernel.variance.values[0])
+        print("w: ", w, "h: ", h)
         if X_D is None:
             X_D = gp._gpy_gp.X
         if Y_D is None:
             Y_D = gp._gpy_gp.Y
         n, d = X_D.shape
         # n: number of samples, d: dimensionality of each sample
+        print("X_D: ", X_D, "Y_D: ", Y_D)
 
         if isinstance(prior, Gaussian1D):
             mu = prior.matrix_mean

@@ -81,7 +81,9 @@ class GPRegression:
         The length of the parameter array must be exactly 2 more than the dimensionality of the data
         :return: the log-likelihood of the model evaluated.
         """
-        x = np.asarray(x).reshape(-1)
+
+        # Transform to exponentiated space
+        x = np.asarray(np.exp(x)).reshape(-1)
         # display(self.model)
         assert len(x) == self.dimensions + 2
         # 2 extra dimensions to accommodate the Gaussian noise and model variance parameter of the RBF kernel
@@ -96,7 +98,7 @@ class GPRegression:
         :param x: List/array of parameters
         :return: the likelihood of the model evaluated
         """
-        x = x.reshape(-1)
+        x = np.asarray(np.exp(x)).reshape(-1)
         return np.exp(-self.log_sample(x))
 
     def _collect_params(self) -> np.ndarray:
@@ -108,6 +110,7 @@ class GPRegression:
         res[0] = self.model.rbf.variance
         res[1:-1] = self.model.rbf.lengthscale
         res[-1] = self.model.Gaussian_noise.variance
+        # This is the parameter we are interested in for the Diego paper
         return res
 
 
@@ -138,7 +141,7 @@ class GPLikelihood:
         return res
 
     # ---------------- Compute the marginal likelihood marginalised by the hyperparameters \theta ------- #
-    def smc(self) -> tuple:
+    def smc(self, display_noise=False) -> tuple:
         """
         Compute the log-evidence marginalised by hyper-parameters by using exhaustive simple Monte Carlo sampling
         :return: Computed evidence, computed log-evidence
@@ -160,12 +163,16 @@ class GPLikelihood:
             mc_max = np.max(mc_out[:i+1])
             mc_int[i] = np.mean(np.exp(mc_out[:i+1] - mc_max))
             log_mc_int[i] = np.log(mc_int[i]) + mc_max
-            print('samples', mc_samples[i, :])
-            print(log_mc_int[i])
-            if i % 2000 == 0:
+
+            if i % 10 == 0:
+                self.plot_iterations(i, mc_samples, mc_out)
                 print("Step", str(i))
-                print("Current estimate of Log-evidence: ", log_mc_int[i])
-                plt.plot(log_mc_int[:i])
+                if display_noise:
+                    pass
+                else:
+                    print('samples', mc_samples[i, :])
+                    print("Current estimate of Log-evidence: ", log_mc_int[i])
+                    plt.plot(log_mc_int[:i])
                 plt.show()
         self.smc_samples = log_mc_int
         return mc_int[-1], log_mc_int[-1]
@@ -184,44 +191,57 @@ class GPLikelihood:
         """
         budget = self.options['naive_bq_budget']
 
-        naive_bq_samples = np.zeros((budget, self.gpr.dimensions+2))
-        naive_bq_int = np.zeros((budget, ))
-        log_naive_bq_int = np.zeros((budget, ))
+        naive_bq_samples = np.zeros((budget, self.gpr.dimensions+2))  # Array to store all the x locations of samples
+        naive_bq_log_y = np.zeros((budget, ))  # Array to store all the log-likelihoods evaluated at x
+        naive_bq_y = np.zeros((budget, ))  # Array to store the likelihoods evaluated at x
+        log_naive_bq_int = np.zeros((budget, ))  # Array to store the current estimate of the marginalised integral
 
         # Initial points
-        initial_x = np.zeros((self.dimensions+2, 1)).reshape(1, -1)
-        initial_y = np.array(self.gpr.log_sample(np.exp(initial_x))).reshape(1, -1)
+        initial_x = np.zeros((self.dimensions+2, 1)).reshape(1, -1)+1e-6  # Set the initial sample to the prior mean
+        initial_y = np.array(self.gpr.log_sample(initial_x)).reshape(1, -1)
 
-        # Prior settings
+        # Prior in log space
         prior_mean = self.options['prior_mean'].reshape(1, -1)
         prior_cov = self.options['prior_variance']
 
-        # Setting up kernel
-        kern = GPy.kern.RBF(self.dimensions+2, variance=self.options['naive_bq_kern_variance'],
-                            lengthscale=self.options['naive_bq_kern_lengthscale'])
+        # Setting up kernel - noting the log-transformation
+        kern = GPy.kern.RBF(self.dimensions+2, variance=np.log(self.options['naive_bq_kern_variance']),
+                            lengthscale=np.log(self.options['naive_bq_kern_lengthscale']))
 
         # Initial guess for the GP for BQ
         lik = GPy.likelihoods.Gaussian(variance=1e-10)
         prior = Gaussian(mean=prior_mean.reshape(-1), covariance=prior_cov)
-        gpy_gp = GPy.core.GP(np.exp(initial_x), initial_y, kernel=kern, likelihood=lik)
+        gpy_gp = GPy.core.GP(initial_x, initial_y, kernel=kern, likelihood=lik)
         gp = GP(gpy_gp)
         model = OriginalIntegrandModel(gp=gp, prior=prior)
-        for i in range(self.options['naive_bq_budget']):
+        for i in range(1, self.options['naive_bq_budget']):
             # Do active sampling
-            this_x = np.exp(np.array(select_batch(model, 1, LOCAL_PENALISATION)).reshape(1, -1))
+            this_x = np.array(select_batch(model, 1, LOCAL_PENALISATION)).reshape(1, -1)
             naive_bq_samples[i, :] = this_x
-            this_y = np.array(self.gpr.log_sample(this_x)).reshape(1, -1)
+            naive_bq_log_y[i] = np.array(self.gpr.log_sample(this_x)).reshape(1, -1)
+
+            # Compute the scaling
+            log_scaling = np.max(naive_bq_log_y[:i])
+
+            # Scaling batch by max and exponentiate
+            naive_bq_y[:i] = np.exp(naive_bq_log_y[:i] - log_scaling)
+            this_y = naive_bq_y[i]
+
             model.update(this_x, this_y)
             gpy_gp.optimize()
-            log_naive_bq_int[i], _, _ = model.integral_mean()
-            naive_bq_int[i] = np.exp(log_naive_bq_int[i])
-            if i % 20 == 0:
+            naive_bq_int, _, _= model.integral_mean(log_transform=True)
+            log_naive_bq_int[i] = naive_bq_int + log_scaling
+            print("samples", np.exp(this_x))
+            print("eval", log_naive_bq_int[i])
+            if i % 1 == 0:
+                self.plot_iterations(i, naive_bq_samples, naive_bq_log_y)
                 print("Step", str(i))
                 print("Current estimate of Log-evidence: ", log_naive_bq_int[i])
+                # print("Current values of hyperparameters: ", display(gpy_gp))
                 plt.plot(log_naive_bq_int[:i])
                 plt.show()
         self.naive_bq_samples = naive_bq_samples
-        return naive_bq_int[-1], log_naive_bq_int[-1]
+        return naive_bq_log_y[-1], log_naive_bq_int[-1]
 
     def wsabi_bq(self):
         """
@@ -275,8 +295,29 @@ class GPLikelihood:
     def save_results(self):
         pass
 
-    def plot_results(self):
-        pass
+    def plot_iterations(self, i, samples, log_lik, log_lik_int=None, noise_only=False):
+        if i == 0:
+            return
+        if noise_only:
+            if i > 20:
+                plt.plot(samples[:i-20, -1], log_lik[:i - 20], "x", 'gray')
+                plt.plot(samples[i-20:i, -1], log_lik[:i - 20], "x", "red")
+            else:
+                plt.plot(samples[:i, -1], log_lik[:i], "x", 'red')
+                plt.title(col_headers[-1])
+        else:
+            for j in range(0, self.dimensions+1):
+                plt.subplot(2, 5, j+1)
+                if i > 20:
+                    plt.plot(samples[:i-20, j], log_lik[:i - 20], "x", 'gray')
+                    plt.plot(samples[i-20:i, j], log_lik[:i - 20], "x", "red")
+                else:
+                    plt.plot(samples[:i, j], log_lik[:i], "x", 'red')
+                    plt.title(col_headers[j])
+            if log_lik_int:
+                plt.subplot(2, 5, self.dimensions+1)
+                plt.plot(log_lik_int[:i])
+        plt.show()
 
 
 class GPPosterior:
@@ -287,9 +328,7 @@ class GPPosterior:
 if __name__ == '__main__':
     gpr = GPRegression()
     lik = GPLikelihood(gpr)
-    x_max = lik.maximum_likelihood()
-    print(x_max)
-    print(gpr.log_sample(x_max))
-    #exit()
+    lik.naive_bq()
+
     lik.smc()
 
