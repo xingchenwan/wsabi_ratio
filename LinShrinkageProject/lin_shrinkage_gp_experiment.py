@@ -4,13 +4,15 @@ import pandas as pd
 import numpy as np
 import GPy
 from IPython.display import display
-from .LogMultivariateGaussian import LogMultivariateGaussian
+from LinShrinkageProject.LogMultivariateGaussian import LogMultivariateGaussian
 import matplotlib.pyplot as plt
 import seaborn as sns
 
 file_path = "data/yacht_hydrodynamics.data.txt"
 MLE_optimisation_restart = 20
 MLE_optimisation_iteration = 1000
+MCMC_samples = 10
+MCMC_burn_in = 2
 
 
 def load_data(validation_ratio: float=0.3):
@@ -88,7 +90,7 @@ def param_maximum_likelihood(gpy_gp: GPy.models.GPRegression, test_model: bool =
     if lengthscale_prior is not None:
         gpy_gp.kern.lengthscale.set_prior(lengthscale_prior)
     if noise_prior is not None:
-        gpy_gp.kern.Gaussian_noise.variance.set_prior(noise_prior)
+        gpy_gp.Gaussian_noise.variance.set_prior(noise_prior)
         # todo: check this
     gpy_gp.optimize(messages=True, max_iters=MLE_optimisation_iteration)
     gpy_gp.optimize_restarts(num_restarts=MLE_optimisation_restart)
@@ -128,8 +130,6 @@ def param_hmc(gpy_gp: GPy.models.GPRegression,
               variance_prior: GPy.priors.Prior = None,
               lengthscale_prior: GPy.priors.Prior = None,
               noise_prior: GPy.priors.Prior = None,
-              samples_per_iter: int = 20000,
-              num_iters: int = 20,
               test_X: np.ndarray = None, test_Y: np.ndarray = None,
               plot_distributions: bool = False):
     """
@@ -148,17 +148,18 @@ def param_hmc(gpy_gp: GPy.models.GPRegression,
     if lengthscale_prior is not None:
         gpy_gp.kern.lengthscale.set_prior(lengthscale_prior)
     if noise_prior is not None:
-        gpy_gp.kern.Gaussian_noise.variance.set_prior(noise_prior)
-        # todo: check this
-    hmc = GPy.inference.mcmc.HMC(gpy_gp, stepsize=1e-1)
-    t = hmc.sample(num_samples=samples_per_iter, hmc_iters=num_iters)
+        gpy_gp.Gaussian_noise.variance.set_prior(noise_prior)
+    display(gpy_gp)
+    hmc = GPy.inference.mcmc.HMC(gpy_gp, stepsize=5e-2)
+    t = hmc.sample(num_samples=MCMC_samples)
     if plot_distributions:
         df = pd.DataFrame(t, columns=gpy_gp.parameter_names_flat())
-        ax = sns.distplot(df['Gaussian_noise.variance'], color='r', )
+        ax = sns.distplot(df.iloc[:, -1], color='r', )
         plt.show()
-    gpy_gp.kern.variance[:] = t[:, -2].mean()
-    gpy_gp.kern.lengthscale[:] = t[:, :-2].mean()
-    gpy_gp.kern.Gaussian_noise[:] = t[:, -1].mean()
+    samples = t[MCMC_burn_in:, :]
+    gpy_gp.kern.variance[:] = samples[:, -2].mean()
+    gpy_gp.kern.lengthscale[:] = samples[:, :-2].mean()
+    gpy_gp.kern.Gaussian_noise[:] = samples[:, -1].mean()
     res = [gpy_gp.rbf.variance, gpy_gp.rbf.lengthscale, gpy_gp.Gaussian_noise.variance]
     rmse = np.nan
     if test_model:
@@ -212,30 +213,35 @@ if __name__ == '__main__':
     m_mle, params_mle, _ = param_maximum_likelihood(m, test_X=validate_x, test_Y=validate_y)
 
     # Do a MAP-II estimate of the hyperparameters. Here we can specify a prior over $\theta$, the hyperparameter vector
-    # For this case, we use an isotropic zero-mean Gaussian prior with variance of 4 in the *log-space* for the length-
-    # scale and variance hyperparameters, and equivalently a Gaussian prior of mean of -4 and variance 4 for the noise
+    # For this case, we use an isotropic zero-mean Gaussian prior with variance of 2 in the *log-space* for the length-
+    # scale and variance hyperparameters, and equivalently a Gaussian prior of mean of -6 and variance 2 for the noise
     # hyperparameter in the *log-space*
     variance_prior = GPy.priors.LogGaussian(mu=0., sigma=2.)
 
     lengthscale_prior_mu = np.array([0.]*input_dim)
     lengthscale_prior_var = np.eye(input_dim) * 2.
-    lengthscale_prior = LogMultivariateGaussian(mu=lengthscale_prior_mu, var=lengthscale_prior_var)
+    # lengthscale_prior = LogMultivariateGaussian(mu=lengthscale_prior_mu, var=lengthscale_prior_var)
+    lengthscale_prior = None
 
     noise_prior = GPy.priors.LogGaussian(mu=-4, sigma=2)
+
+    # Use HMC sampling - we can also infer a posterior distribution of the hyperparameters using Monte Carlo technique
+    m_hmc, params_hmc, _ = param_hmc(m_mle, lengthscale_prior=lengthscale_prior,
+                                     variance_prior=variance_prior,
+                                     noise_prior=noise_prior,
+                                     test_X=validate_x, test_Y=validate_y,
+                                     plot_distributions=True)
+
+
     m_map, params_map, _ = param_maximum_likelihood(m,
                                                     lengthscale_prior=lengthscale_prior,
                                                     variance_prior=variance_prior,
                                                     noise_prior=noise_prior,
                                                     test_X=validate_x, test_Y=validate_y)
 
-    # Use HMC sampling - we can also infer a posterior distribution of the hyperparameters using Monte Carlo technique
-    m_hmc, params_hmc, _ = param_hmc(m, lengthscale_prior=lengthscale_prior,
-                                     variance_prior=variance_prior,
-                                     noise_prior=noise_prior,
-                                     test_X=validate_x, test_Y=validate_y,
-                                     plot_distributions=True)
 
-    # Alternatively, manually supply the values of the hyperparameters
+
+    # Alternatively, we can manually supply the values of the hyperparameters
     # Here we use the MAP estimates for all hyperparameters apart from the Gaussian noise, and set a fixed value for the
     # Gaussian noise
     params_manual = params_map[:]
