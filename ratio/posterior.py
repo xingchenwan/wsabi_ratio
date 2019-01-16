@@ -1,5 +1,8 @@
-class GPPosterior:
-    def __init__(self):
+from ratio.functions import Functions
+
+
+class ParamPosterior:
+    def __init__(self, regression_model: Functions, ):
         pass
 
     def smc(self):

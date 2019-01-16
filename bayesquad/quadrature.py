@@ -13,7 +13,7 @@ from .decorators import flexible_array_dimensions
 from .gps import WarpedGP, WsabiLGP, GP
 from .maths_helpers import jacobian_of_f_squared_times_g, hessian_of_f_squared_times_g
 from .priors import Gaussian, Prior
-from ratio_extension.prior_1d import Gaussian1D
+from ratio.prior_1d import Gaussian1D
 from abc import abstractmethod
 from scipy.stats import multivariate_normal, norm
 from scipy.linalg import cho_solve, cho_factor
@@ -301,8 +301,8 @@ class OriginalIntegrandModel(IntegrandModel):
         from GPy.util.linalg import jitchol
         # w, h are the lengthscale and variance of the RBF kernel - see Equation 7.1.4 in Mike's DPhil Dissertation
 
-        w = np.exp(kernel.lengthscale.values)
-        h = np.exp(kernel.variance.values[0])
+        w = kernel.lengthscale.values
+        h = kernel.variance.values[0]
 
         #print("kerLengthScale: ", kernel.lengthscale.values[0], 'kerVar: ', kernel.variance.values[0])
         # print("w: ", w, "h: ", h)

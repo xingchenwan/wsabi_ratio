@@ -2,8 +2,8 @@
 # An implementation of Monte Carlo Quadrature (Slice Sampling)
 
 import numpy as np
-from ratio_extension.naive_quadratures import NaiveMethods
-from ratio_extension.test_functions import TrueFunctions
+from ratio.naive_quadratures import NaiveMethods
+from ratio.functions import Functions
 from bayesquad.priors import Prior
 from typing import Union
 import matplotlib.pyplot as plt
@@ -14,7 +14,7 @@ class MonteCarlo(NaiveMethods):
     """
     An implementation of the multidimensional Slice Sampling Monte Carlo method - proposed by Neal 2003
     """
-    def __init__(self, r: TrueFunctions, q: TrueFunctions, p: Prior,
+    def __init__(self, r: Functions, q: Functions, p: Prior,
                  true_prediction_integral: float = None, true_evidence_integral: float = None,
                  **options):
         super(MonteCarlo, self).__init__(r, q, p, true_prediction_integral, true_evidence_integral)
@@ -72,7 +72,7 @@ class MonteCarlo(NaiveMethods):
         return x
 
     @staticmethod
-    def _eval_fns_log(x: np.ndarray, prior: Prior, *funcs: TrueFunctions) -> float:
+    def _eval_fns_log(x: np.ndarray, prior: Prior, *funcs: Functions) -> float:
         """
         Evaluate the log(g(\phi)) where g is:
         $

@@ -5,7 +5,7 @@ from bayesquad.quadrature import WarpedIntegrandModel, OriginalIntegrandModel
 from bayesquad.batch_selection import select_batch
 from bayesquad.gps import WsabiLGP, GP
 from bayesquad.priors import Prior
-from ratio_extension.test_functions import TrueFunctions
+from ratio.functions import Functions
 import numpy as np
 import GPy
 import matplotlib.pyplot as plt
@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 
 
 class NaiveMethods(ABC):
-    def __init__(self, r: TrueFunctions, q: TrueFunctions, p: Prior,
+    def __init__(self, r: Functions, q: Functions, p: Prior,
                  true_prediction_integral: float=None, true_evidence_integral: float=None):
         assert r.dimensions == q.dimensions, \
             "The dimensions of the numerator and denominator do not match!"
@@ -138,7 +138,7 @@ class NaiveWSABI(NaiveMethods):
     the numerator integrand.
     """
 
-    def __init__(self, r: TrueFunctions, q: TrueFunctions, p: Prior,
+    def __init__(self, r: Functions, q: Functions, p: Prior,
                  true_prediction_integral: float = None, true_evidence_integral: float = None,
                  **options):
         super(NaiveWSABI, self).__init__(r, q, p, true_prediction_integral, true_evidence_integral)
@@ -259,7 +259,7 @@ class NaiveBQ(NaiveMethods):
     Direct implementation of the Bayesiqn Quadrature method applied independently to both the numerator and denominator
     integrals without warping the output space as in WSABI methods.
     """
-    def __init__(self, r: TrueFunctions, q: TrueFunctions, p: Prior,
+    def __init__(self, r: Functions, q: Functions, p: Prior,
                  true_prediction_integral: float = None, true_evidence_integral: float = None,
                  **options):
         super(NaiveBQ, self).__init__(r, q, p, true_prediction_integral, true_evidence_integral)

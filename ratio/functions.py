@@ -8,6 +8,7 @@ from typing import Union, Tuple
 from abc import ABC
 from bayesquad.priors import Gaussian, Prior
 from scipy import integrate
+from scipy.stats import norm, multivariate_normal
 
 
 class Functions(ABC):
@@ -35,15 +36,26 @@ class Functions(ABC):
     def _collect_params(self) -> np.ndarray:
         pass
 
+    def _sample_test(self, x: Union[np.ndarray, float, list]):
+        x = np.asarray(x)
+        if x.ndim == 0 or x.ndim == 1:
+            assert self.dimensions == 1, "Scalar input is only permitted if the function is of dimension!"
+        else:
+            # If plotting a list of points, the ndim of the supplied x np array must be 2
+            assert x.ndim == 2
+            assert x.shape[1] == self.dimensions, "Dimension of function is of" + str(self.dimensions) + \
+                                                  " ,but the dimension of input is " + str(x.shape[1])
+        return x
 
-class Rosenbrook2D(Functions):
+
+class Rosenbrock2D(Functions):
     """
     A sample 2D Rosenbrook likelihood function.
     Input is a 2 dimensional vector and output is the result of the Rosenbrook function queried on that point.
     """
     def __init__(self, prior: Prior = None,
                  x_range=(-10, 10), y_range=(-10, 10), eps=0.01):
-        super(Rosenbrook2D, self).__init__()
+        super(Rosenbrock2D, self).__init__()
         self.prior = prior
         self.x_range = x_range
         self.y_range = y_range
@@ -202,3 +214,109 @@ class GPRegressionFromFile(Functions):
         res[-1] = self.model.Gaussian_noise.variance
         # This is the parameter we are interested in for the Diego paper
         return res
+
+
+class GaussMixture(Functions):
+    """
+    A test function consists of a mixture (summation) of Gaussians (so used because it allows the evaluation of
+    the integration exactly as a benchmark for other quadrature methods.
+    """
+    def __init__(self, means: Union[np.ndarray, float, list], covariances: Union[np.ndarray, float, list],
+                 weights: Union[np.ndarray, list, float]=None):
+        super(GaussMixture, self).__init__()
+
+        self.means = np.asarray(means)
+        self.covs = np.asarray(covariances)
+        self.mixture_count = len(self.means)
+
+        if self.means.ndim == 1:
+            self.dimensions = 1
+        else:
+            self.dimensions = self.means.shape[1]
+        if weights is None:
+            # For unspecified weights, each individual Gaussian distribution within the mixture will receive
+            # an equal weight
+            weights = np.array([1./self.mixture_count]*self.mixture_count)
+        self.weights = np.asarray(weights)
+        assert self.means.shape[0] == self.covs.shape[0], "Mean and Covariance List mismatch!"
+        assert self.means.shape[0] == self.weights.shape[0]
+        assert self.weights.ndim <= 1, "Weight vector must be a 1D array!"
+
+    def sample(self, x: Union[np.ndarray, float, list], ):
+        """
+        Sample from the true function either with one query point or a list of points
+        :param x: the coordinate(s) of the query point(s)
+        :return: the value of the true function evaluated at the query point(s)
+        """
+        x = self._sample_test(x)
+        if x.ndim <= 1:
+            y = 0
+            for i in range(self.mixture_count):
+                if self.dimensions == 1:
+                    y += self.weights[i] * self.one_d_normal(x, self.means[i], self.covs[i])
+                else:
+                    y += self.weights[i] * self.multi_d_gauss(x, self.means[i], self.covs[i])
+        else:
+            x = np.squeeze(x, axis=1)
+            y = np.zeros((x.shape[0], ))
+            for i in range(self.mixture_count):
+                if self.dimensions == 1:
+                    y += self.weights[i] * self.one_d_normal(x, self.means[i], self.covs[i])
+                else:
+                    y += self.weights[i] * self.multi_d_gauss(x, self.means[i], self.covs[i])
+        return y
+
+    def log_sample(self, x: Union[np.ndarray, float, list]):
+        return np.log(self.sample(x))
+
+    @staticmethod
+    def one_d_normal(x: np.ndarray, mean, var) -> np.ndarray:
+        assert x.ndim == 1
+        return np.array([norm.pdf(x[i], mean, var) for i in range(x.shape[0])])
+
+    @staticmethod
+    def multi_d_gauss(x: np.ndarray, mean, cov) -> np.ndarray:
+        assert x.ndim == 2
+        return np.array([multivariate_normal.pdf(x[i], mean=mean, cov=cov) for i in range(x.shape[0])])
+
+    def add_gaussian(self, means: Union[np.ndarray, float], var: Union[np.ndarray, float], weight: Union[np.ndarray, float]):
+        assert means.shape == self.means.shape[1:]
+        assert var.shape == self.covs.shape[1:]
+        self.means = np.append(self.means, means)
+        self.covs = np.append(self.covs, var)
+        self.weights = np.append(self.weights, weight)
+
+    def _rebase_weight(self):
+        self.weights = self.weights / np.sum(self.weights)
+
+
+class ProductOfGaussianMixture(Functions):
+    """
+    A test function that is product of n Gaussian mixtures (defined below)
+    """
+    def __init__(self, *gauss_mixtures: Functions):
+        super(ProductOfGaussianMixture, self).__init__()
+        gauss_mixtures_dims = []
+        for each_mixture in gauss_mixtures:
+            assert isinstance(each_mixture, GaussMixture), "Invalid Type: GaussMixture object(s) expected"
+            gauss_mixtures_dims.append(each_mixture.dimensions)
+        assert len(set(gauss_mixtures_dims)) == 1, "There are different dimensions in the GaussMixture objects!"
+        self.dimensions = gauss_mixtures_dims[0]
+        self.gauss_mixtures = gauss_mixtures
+        self.gauss_mixtures_count = len(gauss_mixtures)
+
+    def sample(self, x: Union[np.ndarray, float, list]):
+        x = self._sample_test(x)
+        if x.ndim <= 1:
+            y_s = np.array([each_mixture.sample(x) for each_mixture in self.gauss_mixtures])
+            print(y_s)
+            return np.prod(y_s)
+        else:
+            y_s = []
+            for j in range(x.shape[0]):
+                y_s.append([each_mixture.sample(x[j]) for each_mixture in self.gauss_mixtures])
+            y_s = np.asarray(y_s)
+            return np.prod(y_s, axis=1)
+
+    def log_sample(self, x: Union[np.ndarray, float, list]):
+        return np.log(self.sample(x))

@@ -1,9 +1,9 @@
-from ratio_extension.test_functions import *
+from ratio.test_1d import *
 import matplotlib.pyplot as plt
-from ratio_extension.naive_quadratures import NaiveWSABI, NaiveBQ
+from ratio.naive_quadratures import NaiveWSABI, NaiveBQ
 from bayesquad.priors import Gaussian
-from ratio_extension.prior_1d import Gaussian1D
-from ratio_extension.monte_carlo import MonteCarlo
+from ratio.prior_1d import Gaussian1D
+from ratio.monte_carlo import MonteCarlo
 
 def plot_gauss_mix(r: GaussMixture, q: GaussMixture):
     r.plot(label='$r(\phi) = p(z_d|\phi)$')
