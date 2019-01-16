@@ -2,6 +2,8 @@
 
 from typing import Dict, Any
 
+import matplotlib
+matplotlib.use("TkAgg")
 import GPy
 import matplotlib.pyplot as plt
 import numpy as np
@@ -97,8 +99,8 @@ plot_true_function()
 
 # Run algorithm.
 
-BATCHES = 25
-BATCH_SIZE = 4
+BATCHES = 2
+BATCH_SIZE = 1
 
 for i in range(BATCHES):
     plot_integrand_posterior(model)

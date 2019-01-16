@@ -125,20 +125,6 @@ class MonteCarlo(NaiveMethods):
         plt.show()
         return self.results[-1]
 
-    def _find_volume(self,) -> tuple:
-        """
-        Compute the volume (or the higher dimensional equivalent for volume) for the Monte Carlo integration
-        :return: volume
-        """
-        vol = 1
-        if len(self.selected_points) == 0:
-            return 0, 0
-        for i in range(self.dim):
-            slice = self.selected_points[:, i]
-            vol *= max(slice) - min(slice)
-        # print(vol_num, vol_den)
-        return vol
-
     def _unpack_options(self,
                         num_batches: int = 1000,
                         width: Union[float, np.ndarray] = 0.5,
@@ -191,7 +177,7 @@ class MonteCarlo(NaiveMethods):
         self.plot_parameter_posterior()
         sns.distplot(self.selected_points[:i+1, :], kde=True)
         plt.subplot(312)
-        self.q.plot((-5, 0.1, 5))
+        self.q.plot_lik((-5, 0.1, 5))
         plt.plot(selected_pts[:-self.options['display_step'], 0], self.evaluated_points[:-self.options['display_step']],
                  'x', color='grey',)
         plt.plot(selected_pts[-self.options['display_step']:, 0], self.evaluated_points[-self.options['display_step']:],

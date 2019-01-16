@@ -108,3 +108,29 @@ class Gaussian(Prior):
         """See :func:`~Prior.__call__`"""
         validate_dimensions(x, self._dimensions)
         return np.atleast_1d(self._multivariate_normal.pdf(x))
+
+
+class LogGaussian(Prior):
+    """
+
+    Multivariate Log-Gaussian Prior
+
+    Addition by Xingchen Wan | 2018
+
+    """
+    def __init__(self, mean: ndarray, cov: ndarray):
+        self.mean = mean
+        self.covariance = cov
+        self.precision = np.linalg.inv(cov)
+        self._dimensions = np.size(mean)
+        self._multivariate_normal = scipy.stats.multivariate_normal(mean=mean, cov=cov)
+
+    def sample(self) -> ndarray:
+        return np.atleast_1d(np.exp(self._multivariate_normal.rvs()))
+
+    def gradient(self, x: ndarray) -> Tuple[ndarray, ndarray]:
+        pass
+
+    def __call__(self, x: ndarray) -> ndarray:
+        validate_dimensions(x, self._dimensions)
+        return np.atleast_1d(np.exp(self._multivariate_normal.pdf(x)))

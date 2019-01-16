@@ -122,12 +122,31 @@ class IntegrandModel:
         """
         self.gp.update(x, y)
 
-    def integral_mean(self, log_transform=False) -> float:
+    def replace(self, x:ndarray = None, y:ndarray = None):
+        """
+        Replace the X/Y with a new data set
+        Note: this overwrites the existing X and Y arrays. To add new data instead of replacing all exisiting data,
+        use update method instead
+        :param x:  A 2D array of shape (num_points, num_dimension) or a 1D array of shape (num_dimensions)
+        :param y:  A 1D array of shape (num_points).
+        :return:
+        """
+        if x.shape[0] != y.shape[0]:
+            raise ValueError("The shape of X and Y do not match!")
+        if x.ndim == 1:
+            x = x.reshape(1, -1)
+        if x is not None:
+            self.gp.X = x
+        if y is not None:
+            self.gp.Y = y
+
+
+    def integral_mean(self,) -> float:
         """Compute the mean of the integral of the function under this model."""
         if isinstance(self.prior, Gaussian) and isinstance(self.gp.kernel, RBF):
-            return self._compute_mean(self.prior, self.gp, self.gp.kernel, log_transform=log_transform)
+            return self._compute_mean(self.prior, self.gp, self.gp.kernel)
         elif isinstance(self.prior, Gaussian1D) and isinstance(self.gp.kernel, RBF):
-            return self._compute_mean(self.prior, self.gp, self.gp.kernel, log_transform=log_transform)
+            return self._compute_mean(self.prior, self.gp, self.gp.kernel)
         else:
             raise NotImplementedError()
 
@@ -186,7 +205,7 @@ class WarpedIntegrandModel(IntegrandModel):
             g=gp_variance, g_jacobian=gp_variance_jacobian, g_hessian=gp_variance_hessian)
 
     @staticmethod
-    def _compute_mean(prior: Union[Gaussian, Gaussian1D], gp: WarpedGP, kernel: RBF,
+    def _compute_mean(prior: Gaussian, gp: WarpedGP, kernel: RBF,
                       log_transform=False):
         dimensions = gp.dimensions
 
@@ -199,14 +218,9 @@ class WarpedIntegrandModel(IntegrandModel):
         if log_transform:
             raise NotImplementedError()
 
-        if isinstance(prior, Gaussian1D):
-            mu = prior.matrix_mean
-            sigma = prior.matrix_variance
-            sigma_inv = prior.matrix_precision
-        else:
-            mu = prior.mean
-            sigma = prior.covariance
-            sigma_inv = prior.precision
+        mu = prior.mean
+        sigma = prior.covariance
+        sigma_inv = prior.precision
 
         nu = (X_D[:, newaxis, :] + X_D[newaxis, :, :]) / 2
         A = gp._gp.posterior.woodbury_vector
@@ -219,10 +233,7 @@ class WarpedIntegrandModel(IntegrandModel):
         C = sigma_inv + 2 * np.eye(dimensions) / kernel_lengthscale ** 2
 
         C_inv = np.linalg.inv(C)
-        if dimensions == 1:
-            gamma_part = 2 * nu / kernel_lengthscale ** 2 + (sigma_inv @ mu)[newaxis, :]
-        else:
-            gamma_part = 2 * nu / kernel_lengthscale ** 2 + (sigma_inv @ mu)[newaxis: newaxis, :]
+        gamma_part = 2 * nu / kernel_lengthscale ** 2 + (sigma_inv @ mu)[newaxis, newaxis, :]
         gamma = np.einsum('kl,ijl->ijk', C_inv, gamma_part)
 
         k_1 = 2 * np.einsum('ijk,ijk->ij', nu, nu) / kernel_lengthscale ** 2
@@ -273,7 +284,7 @@ class OriginalIntegrandModel(IntegrandModel):
     @staticmethod
     def _compute_mean(prior: Union[Gaussian, Gaussian1D], gp: GP, kernel: RBF,
                       X_D: np.ndarray=None, Y_D: Union[np.ndarray, int]=None,
-                      log_transform=False):
+                      ):
         """
         Compute the mean (i.e. expectation) of the integral
         :param prior: Prior
@@ -290,22 +301,18 @@ class OriginalIntegrandModel(IntegrandModel):
         from GPy.util.linalg import jitchol
         # w, h are the lengthscale and variance of the RBF kernel - see Equation 7.1.4 in Mike's DPhil Dissertation
 
-        if log_transform is True:
-            w = np.exp(kernel.lengthscale.values[0])
-            h = np.exp(kernel.variance.values[0])
-        else:
-            w = kernel.lengthscale.values[0]
-            h = kernel.variance.values[0]
+        w = np.exp(kernel.lengthscale.values)
+        h = np.exp(kernel.variance.values[0])
 
-        print("kerLengthScale: ", kernel.lengthscale.values[0], 'kerVar: ', kernel.variance.values[0])
-        print("w: ", w, "h: ", h)
+        #print("kerLengthScale: ", kernel.lengthscale.values[0], 'kerVar: ', kernel.variance.values[0])
+        # print("w: ", w, "h: ", h)
         if X_D is None:
             X_D = gp._gpy_gp.X
         if Y_D is None:
             Y_D = gp._gpy_gp.Y
         n, d = X_D.shape
         # n: number of samples, d: dimensionality of each sample
-        print("X_D: ", X_D, "Y_D: ", Y_D)
+        # print("X_D: ", X_D, "Y_D: ", Y_D)
 
         if isinstance(prior, Gaussian1D):
             mu = prior.matrix_mean
@@ -323,19 +330,21 @@ class OriginalIntegrandModel(IntegrandModel):
             for i in range(n):
                 n_s[i] = h * norm.pdf(X_D[i, :], loc=mu, scale=np.sqrt(W))
         else:
-            w = np.array([w]*d)
-            W = sigma
-            W_2 = 2 * sigma
-            for i in range(d):
-                W[i, i] += w[i] ** 2
-                W_2[i, i] += w[i] ** 2
+            if len(w) > 1:
+                assert len(w) == d
+                w = np.diag(w)
+            else:
+                w = np.diag(np.array([w]*d))
+            W = sigma + w
             for i in range(n):
                 n_s[i] = h * multivariate_normal.pdf(X_D[i, :], mean=mu, cov=W)
         K_xx = kernel.K(X_D)
         # Find the inverse of K_xx matrix via Cholesky decomposition (with jitter)
+
         K_xx_cho = jitchol(K_xx,)
         choleksy_inverse = np.linalg.inv(K_xx_cho)
         K_xx_inv = choleksy_inverse.T @ choleksy_inverse
+
         if isinstance(Y_D, int) and Y_D == -1:
             return np.nan, K_xx_inv, n_s
         else:
