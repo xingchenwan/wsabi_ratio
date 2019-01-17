@@ -38,7 +38,10 @@ class NaiveMethods(ABC):
         # Ground truth integral values
         self.true_prediction_integral = true_prediction_integral
         self.true_evidence_integral = true_evidence_integral
-        self.true_ratio = self.true_prediction_integral / self.true_evidence_integral
+        if self.true_evidence_integral is None or self.true_prediction_integral is None:
+            self.true_ratio = None
+        else:
+            self.true_ratio = self.true_prediction_integral / self.true_evidence_integral
 
     def quadrature(self):
         for i in range(self.options['num_batches']):

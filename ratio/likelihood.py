@@ -1,4 +1,4 @@
-# Yacht data manipulation
+# Likelihood Surface
 # Xingchen Wan | Dec 2018 | xingchen.wan@st-annes.ox.ac.uk
 # Python 3.7
 
@@ -301,10 +301,16 @@ class GPLikelihood:
 
 # For testing purposes only
 if __name__ == '__main__':
+    from ratio.posterior import ParamPosterior
     pr = Gaussian(mean=np.array([0, 0]), covariance=np.array([[2, 0],[0, 2]]))
     rb = Rosenbrock2D(prior=pr)
 
-    #rb.plot_grd_posterior()
+    # rb.plot_grd_posterior()
+
+    pos = ParamPosterior(rb)
+    pos.smc()
+
+    exit()
 
     lik = GPLikelihood(rb)
     lik.wsabi_bq()

@@ -5,7 +5,7 @@ import numpy as np
 from ratio.naive_quadratures import NaiveMethods
 from ratio.functions import Functions
 from bayesquad.priors import Prior
-from typing import Union
+from typing import Union, Tuple
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -36,7 +36,7 @@ class MonteCarlo(NaiveMethods):
         :param x: query point
         :return:
         """
-        perm = range(self.dim)
+        perm = list(range(self.dim))
         np.random.shuffle(perm)
         log_prob = self._eval_fns_log(x, self.p, self.r)
         x_l = x.copy()
@@ -53,6 +53,7 @@ class MonteCarlo(NaiveMethods):
                     x_l[dd] -= self.widths[dd]
                 while self._eval_fns_log(x_r, self.p, self.r) > log_prob_perturbed:
                     x_r[dd] += self.widths[dd]
+
             while True:
                 x_prime[dd] = np.random.rand() * (x_r[dd] - x_l[dd]) + x_l[dd]
                 log_prob_x_prime = self._eval_fns_log(x_prime, self.p, self.r)
@@ -64,15 +65,14 @@ class MonteCarlo(NaiveMethods):
                     elif x_prime[dd] < x[dd]:
                         x_l[dd] = x_prime[dd]
                     else:
-                        raise RuntimeError("Invalid shrinkage!")
+                        raise RuntimeError("Invalid Shrinkage!")
             x[dd] = x_prime[dd]
             x_l[dd] = x_prime[dd]
             x_r[dd] = x_prime[dd]
 
         return x
 
-    @staticmethod
-    def _eval_fns_log(x: np.ndarray, prior: Prior, *funcs: Functions) -> float:
+    def _eval_fns_log(self, x: np.ndarray, prior: Prior, *funcs: Functions) -> float:
         """
         Evaluate the log(g(\phi)) where g is:
         $
@@ -87,7 +87,8 @@ class MonteCarlo(NaiveMethods):
         res = 0.
         for each_func in funcs:
             res += each_func.log_sample(x)
-        res += np.log(prior(x))
+        res += np.log(prior(x.reshape(-1, self.dim)))
+        # print(res)
         return res
 
     def quadrature(self) -> float:
@@ -127,7 +128,7 @@ class MonteCarlo(NaiveMethods):
 
     def _unpack_options(self,
                         num_batches: int = 1000,
-                        width: Union[float, np.ndarray] = 0.5,
+                        width: Union[float, np.ndarray] = 1.,
                         step_out: bool = True,
                         initial_point: np.ndarray = None,
                         plot_iterations: bool = False,
@@ -151,7 +152,9 @@ class MonteCarlo(NaiveMethods):
         else:
             initial_point = np.array([[0.]*self.dim])
         if isinstance(width, float):
-            width = np.array([width])
+            width = np.array([width]*self.dim)
+        else:
+            assert len(width) == self.dim
         if burn_in is None:
             burn_in = min(50, int(num_batches * 0.1))
         return {

@@ -48,28 +48,45 @@ class Functions(ABC):
         return x
 
 
+class Unity(Functions):
+    """
+    A function that always return 1
+    """
+    def __init__(self, dim):
+        super(Unity, self).__init__()
+        self.dimensions = dim
+
+    def log_sample(self, x: Union[np.ndarray, float, list]):
+        x = self._sample_test(x)
+        return 0
+
+    def sample(self, x: Union[np.ndarray, float, list]):
+        x = self._sample_test(x)
+        return 1
+
+
 class Rosenbrock2D(Functions):
     """
     A sample 2D Rosenbrook likelihood function.
     Input is a 2 dimensional vector and output is the result of the Rosenbrook function queried on that point.
     """
     def __init__(self, prior: Prior = None,
-                 x_range=(-10, 10), y_range=(-10, 10), eps=0.01):
+                 x_range=(-3, 3), y_range=(-3, 3), eps=0.01,
+                 integration_range=(-10, 10)):
         super(Rosenbrock2D, self).__init__()
         self.prior = prior
         self.x_range = x_range
         self.y_range = y_range
+        self.integration_range = integration_range
         self.eps = eps
         self.dimensions = 2
-        self.last_x = None
         self.grd_evidence, self.grd_log_evidence = self.grd_marginal_lik()
-        self.grd_posterior_dist = self.grd_posterior()
+        self.grd_posterior_dist = self.grd_lik_posterior()
 
     def log_sample(self, x: Union[np.ndarray, float, list]):
         # assert len(x) == 2
-        x = np.asarray(x.reshape(-1))
-        self.last_x = x
-        return -1./100*(x[0] - 1) ** 2 - (x[0] ** 2 - x[1]) ** 2
+        res = -1./100*(x[0] - 1.) ** 2 - (x[0] ** 2 - x[1]) ** 2
+        return res
 
     # ----- Ground Truth Computations ---- #
     # These functions should not be accessed by the trial integration methods
@@ -83,36 +100,98 @@ class Rosenbrock2D(Functions):
     def grd_marginal_lik(self,) -> Tuple[float, float]:
         # Compute the ground truth marginal likelihood
         # Implicit integration range in 2D space:
-        xmin, xmax = (-10, 10)
-        ymin, ymax = (-10, 10)
+        xmin, xmax = self.integration_range
+        ymin, ymax = self.integration_range
 
         _sample = self._sample
         _prior = self.prior
 
         def f(x: float, y: float):
             # Integrand function for subsequent integration
-            xv = np.array([[x, y]])
-            return _sample(x, y) * _prior(xv)
+            return _sample(x, y) * _prior.eval(x, y)
 
         margin_lik = integrate.dblquad(f, xmin, xmax, lambda x: ymin, lambda x: ymax)[0]
         log_margin_lik = np.log(margin_lik)
         return margin_lik, log_margin_lik
 
-    def grd_posterior(self,) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def grd_lik_posterior(self, ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         # Compute the ground truth posterior *distribution* over the x/y ranges specified
-        evidence, _ = self.grd_marginal_lik()
+
         x1 = np.arange(self.x_range[0], self.x_range[1], self.eps)
         x2 = np.arange(self.y_range[0], self.y_range[1], self.eps)
+        x_len = len(x1)
         xv, yv = np.meshgrid(x1, x2)
-        z = self._sample(xv, yv) / evidence
-        return xv, yv, z
+        lik = self._sample(xv, yv)
+        posterior = self._sample(xv, yv) * self.prior.eval(xv, yv).reshape(x_len, -1) / self.grd_evidence
+        return xv, yv, lik, posterior
+
+    def grd_posterior_gaussian(self, ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Construct a multivariate Gaussian distribution of the ground posterior distribution with the first and second
+        moments matched to the true posterior.
+        :return: Tuple[nd.array, nd.array]: the mean and covariance of the Gaussian representation
+        """
+        xmin, xmax = self.x_range
+        ymin, ymax = self.y_range
+
+        mu = np.array([0, 0])
+        sigma = np.zeros((2, 2))
+
+        _sample = self._sample
+        _prior = self.prior
+
+        def mean_x(x: float, y: float):
+            return x * _sample(x, y) * _prior.eval(x, y)
+
+        def mean_y(x: float, y: float):
+            return y * _sample(x, y) * _prior.eval(x, y)
+
+        def var_x(x: float, y: float):
+            return x * mean_x(x, y)
+
+        def var_y(x: float, y: float):
+            return y * mean_y(x, y)
+
+        # def var_xy(x: float, y: float):
+        #    return x * mean_y(x, y)
+
+        # First moment
+        (mu[0], mu[1]) = (integrate.dblquad(mean_x, xmin, xmax, lambda x: ymin, lambda x: ymax)[0],
+                        integrate.dblquad(mean_y, xmin, xmax, lambda x: ymin, lambda x: ymax)[0])
+        (sigma[0, 0], sigma[1, 1]) = \
+            (integrate.dblquad(var_x, xmin, xmax, lambda x: ymin, lambda x: ymax)[0],
+             integrate.dblquad(var_y, xmin, xmax, lambda x: ymin, lambda x: ymax)[0],)
+             #integrate.dblquad(var_xy, xmin, xmax, lambda x: ymin, lambda x: ymax)[0],)
+        return mu, sigma
 
     # ----- Ground Truth Visualisation----- #
-    def plot_grd_posterior(self, grd_posterior_res: Tuple[np.ndarray, np.ndarray, np.ndarray] = None):
+    def plot_grd_posterior(self, grd_posterior_res: Tuple[np.ndarray, np.ndarray, np.ndarray] = None,):
         if grd_posterior_res is None:
-            grd_posterior_res = self.grd_posterior()
-        xv, yv, z = grd_posterior_res
-        _ = plt.contour(xv, yv, z)
+            grd_posterior_res = self.grd_lik_posterior()
+        xv, yv, lik, posterior = grd_posterior_res
+        gauss_mu, gauss_sigma = self.grd_posterior_gaussian()
+
+        # Plot the Gaussian distribution moment matched to the posterior distribution
+        pos = np.empty(xv.shape + (2, ))
+        pos[:, :, 0] = xv
+        pos[:, :, 1] = yv
+        z1 = multivariate_normal(gauss_mu, gauss_sigma).pdf(pos)
+
+        # Plotting stuff
+        levels = np.arange(0, 1, 0.05)
+
+        plt.subplot(221)
+        plt.title("Ground Truth Likelihood")
+        CS1 = plt.contour(xv, yv, lik, levels)
+
+        plt.subplot(222)
+        plt.title("Ground Truth Parameter Posterior")
+        CS2 = plt.contour(xv, yv, posterior, levels)
+
+        plt.subplot(223)
+        plt.title("Gaussian Surrogate")
+        CS3 = plt.contour(xv, yv, z1, levels)
+        plt.colorbar(CS3)
         plt.show()
 
     def _collect_params(self) -> np.ndarray:

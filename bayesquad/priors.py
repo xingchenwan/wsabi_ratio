@@ -40,6 +40,13 @@ class Prior(ABC):
         ndarray
             A sample from the prior, as a 1D array of shape (num_dimensions).
         """
+    @abstractmethod
+    def eval(self, *x) -> ndarray:
+        """
+
+        :param x:
+        :return:
+        """
 
     @abstractmethod
     def __call__(self, x: ndarray) -> ndarray:
@@ -109,6 +116,16 @@ class Gaussian(Prior):
         validate_dimensions(x, self._dimensions)
         return np.atleast_1d(self._multivariate_normal.pdf(x))
 
+    def eval(self, *x):
+        assert len(x) == self._dimensions
+        if isinstance(x[0], float):
+            xv = np.array([[x]]).reshape(-1, self._dimensions)
+        else:
+            xv = np.column_stack([i.flat for i in x])
+
+        validate_dimensions(xv, self._dimensions)
+        return np.atleast_1d(self._multivariate_normal.pdf(xv))
+
 
 class LogGaussian(Prior):
     """
@@ -134,3 +151,6 @@ class LogGaussian(Prior):
     def __call__(self, x: ndarray) -> ndarray:
         validate_dimensions(x, self._dimensions)
         return np.atleast_1d(np.exp(self._multivariate_normal.pdf(x)))
+
+    def eval(self, *x):
+        pass
