@@ -560,7 +560,7 @@ def _validate_and_transform_for_gpy_update(x: ndarray, y: ndarray) -> Tuple[ndar
     x_points, y_points = np.size(x, axis=0), np.size(y, axis=0)
 
     if x_points != y_points:
-        raise ValueError("The number of points in x (i.e. the size of the first dimension) must equal the number "
+        raise ValueError("The number of points in x (i.e. the size of the first dimensions) must equal the number "
                          "of points in y. x contained {} points, y contained {} points.".format(x_points, y_points))
 
     return x, y

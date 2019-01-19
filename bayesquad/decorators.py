@@ -6,11 +6,11 @@ from numpy import ndarray
 
 
 def flexible_array_dimensions(func):
-    """Modifies a function so that it can accept either 1D or 2D arrays, and return arrays of consistent dimension.
+    """Modifies a function so that it can accept either 1D or 2D arrays, and return arrays of consistent dimensions.
 
     This decorator allows a vectorised function to be evaluated at a single point, passed as a 1D array. It is intended
-    to be applied to a function whose array arguments have first dimension ranging across data points, and whose return
-    values are also arrays with first dimension ranging across data points. After this decorator has been applied, the
+    to be applied to a function whose array arguments have first dimensions ranging across data points, and whose return
+    values are also arrays with first dimensions ranging across data points. After this decorator has been applied, the
     function may be evaluated at a single point by passing a 1D array, and the trivial first axis will be removed from
     the returned arrays. Within a method which has this decorator applied, we may assume that all array arguments are
     2D, with shape (num_points, num_dimensions).

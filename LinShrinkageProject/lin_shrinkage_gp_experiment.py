@@ -50,7 +50,7 @@ def fit_gp(data_X: np.ndarray, data_Y: np.ndarray, init_params=None) -> GPy.mode
     else:
         assert len(init_params) == data_X.shape[1] + 2, \
             "Shape of the initial parameter vector must be " + \
-            str(data_X.shape[1])+" ,i.e. kernel lengthscale of the data's dimension + kernel variance + noise param"
+            str(data_X.shape[1])+" ,i.e. kernel lengthscale of the data's dimensions + kernel variance + noise param"
     dimension = data_X.shape[1]
     kern = GPy.kern.RBF(input_dim=dimension,
                         lengthscale=init_params[:-2],
@@ -191,7 +191,7 @@ def test_gp(gpy_gp: GPy.models.GPRegression,
     :return:
     """
     assert data_X.shape[0] == data_Y.shape[0], "Lengths of x and labels mismatch"
-    assert data_X.shape[1] == gpy_gp.input_dim, "Dimension of x and the model dimension mismatch"
+    assert data_X.shape[1] == gpy_gp.input_dim, "Dimension of x and the model dimensions mismatch"
     mean_pred, var_pred = gpy_gp.predict(Xnew=data_X)
     rmse = np.sqrt(((mean_pred - np.squeeze(data_Y, -1)) ** 2).mean())
     if display_model is True:
@@ -206,7 +206,7 @@ if __name__ == '__main__':
     # Initialise a GP object on the training data
     m = fit_gp(train_x, train_y)
 
-    # Save the input dimension
+    # Save the input dimensions
     input_dim = m.input_dim
 
     # Do a MLE-II estimate of the hyperparameters.

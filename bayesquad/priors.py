@@ -49,6 +49,14 @@ class Prior(ABC):
         """
 
     @abstractmethod
+    def log_eval(self, x) -> ndarray:
+        """
+
+        :param x:
+        :return:
+        """
+
+    @abstractmethod
     def __call__(self, x: ndarray) -> ndarray:
         """Evaluate the prior's pdf at the given set of points.
 
@@ -115,6 +123,11 @@ class Gaussian(Prior):
         """See :func:`~Prior.__call__`"""
         validate_dimensions(x, self._dimensions)
         return np.atleast_1d(self._multivariate_normal.pdf(x))
+
+    def log_eval(self, x:ndarray) -> ndarray:
+        """Log of the functional value of the prior"""
+        validate_dimensions(x, self._dimensions)
+        return np.atleast_1d(self._multivariate_normal.logpdf(x))
 
     def eval(self, *x):
         assert len(x) == self._dimensions

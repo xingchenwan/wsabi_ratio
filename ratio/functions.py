@@ -39,12 +39,12 @@ class Functions(ABC):
     def _sample_test(self, x: Union[np.ndarray, float, list]):
         x = np.asarray(x)
         if x.ndim == 0 or x.ndim == 1:
-            assert self.dimensions == 1, "Scalar input is only permitted if the function is of dimension!"
+            assert self.dimensions == 1, "Scalar input is only permitted if the function is of dimensions!"
         else:
             # If plotting a list of points, the ndim of the supplied x np array must be 2
             assert x.ndim == 2
             assert x.shape[1] == self.dimensions, "Dimension of function is of" + str(self.dimensions) + \
-                                                  " ,but the dimension of input is " + str(x.shape[1])
+                                                  " ,but the dimensions of input is " + str(x.shape[1])
         return x
 
 
@@ -85,6 +85,8 @@ class Rosenbrock2D(Functions):
 
     def log_sample(self, x: Union[np.ndarray, float, list]):
         # assert len(x) == 2
+        if x.ndim == 2:
+            x = x.squeeze()
         res = -1./100*(x[0] - 1.) ** 2 - (x[0] ** 2 - x[1]) ** 2
         return res
 
@@ -194,9 +196,6 @@ class Rosenbrock2D(Functions):
         plt.colorbar(CS3)
         plt.show()
 
-    def _collect_params(self) -> np.ndarray:
-        return self.last_x
-
 
 class GPRegressionFromFile(Functions):
     """
@@ -206,8 +205,8 @@ class GPRegressionFromFile(Functions):
     GP regression (the original GP regression), 1 variance hyperparameter and 1 Gaussian noise hyperparameter.
     """
     def __init__(self,
-                 kernel='rbf',
-                 file_path="data/yacht_hydrodynamics.data.txt",
+                 test_set_ratio=0.3,
+                 file_path="/Users/xingchenwan/Dropbox/4YP/Codes/wsabi_ratio/data/yacht_hydrodynamics.data.txt",
                  col_headers: tuple =
                  ('Longitudinal position of buoyancy centre',
                   'Prismatic Coefficient',
@@ -218,16 +217,24 @@ class GPRegressionFromFile(Functions):
                   'Residuary Resistance Per Unit Weight of Displacement')
                  ):
         super(GPRegressionFromFile, self).__init__()
+        self.file_path = file_path
         self.X, self.Y = self.load_data()
         self.dimensions = self.X.shape[1] + 2
-        self.kernel_option = kernel
+        self.n = self.X.shape[0]
 
+        # Split the data into test set and training sets:
+        n_training = int(self.n * (1 - test_set_ratio))
+        self.X_train = self.X[:n_training, :]
+        self.Y_train = self.Y[:n_training]
+        self.X_test = self.X[n_training:, :]
+        self.Y_test = self.Y[n_training:]
+
+        self.kernel_option = 'rbf'
         self.model = self.init_gp_model()
-        self.file_path = file_path
         self.col_headers = col_headers
 
     def load_data(self, plot_graph=False):
-        raw_data = pd.read_csv(filepath_or_buffer=self.file_path, header=None, sep='\s+')
+        raw_data = pd.read_csv(filepath_or_buffer=self.file_path, header=None, sep='\s+').values
         if plot_graph:
             num_cols = len(raw_data.columns)
             for i in range(num_cols):
@@ -235,8 +242,12 @@ class GPRegressionFromFile(Functions):
                 plt.plot(raw_data.index, raw_data.loc[:, i])
                 plt.title(self.col_headers[i])
             plt.show()
-        data_X = raw_data.iloc[:, :-1].values
-        data_Y = raw_data.iloc[:, -1].values
+
+        np.random.seed(4)
+        np.random.shuffle(raw_data)
+
+        data_X = raw_data[:, :-1]
+        data_Y = raw_data[:, -1]
 
         # Refactor to 2d array
         if data_Y.ndim == 1:
@@ -247,7 +258,10 @@ class GPRegressionFromFile(Functions):
         return data_X, data_Y
 
     def init_gp_model(self):
-
+        """
+        Initialise a GP regression model
+        :return: A GPy GP regression model
+        """
         init_len_scale = np.array([0.2]*self.X.shape[1])
         init_var = 0.2
 
@@ -258,36 +272,51 @@ class GPRegressionFromFile(Functions):
                                ARD=True,)
         else:
             raise NotImplementedError()
-        m = GPy.models.GPRegression(self.X, self.Y, ker)
+        m = GPy.models.GPRegression(self.X_train, self.Y_train, ker)
         return m
 
-    # ------------ Compute the marginal log-likelihood of the model -------- #
-    def log_sample(self, x: Union[np.ndarray, float, list]) -> float:
+    def log_sample(self, phi: np.ndarray, x: np.ndarray = None):
         """
-        Compute the log-likelihood of the given parameter array x.
-        :param x: List/array of parameters. The first parameter corresponds to the model variance. The second - penul-
-        timate items correspond to the model lengthscale in each dimension. The last item corresponds to the Gaussian
+        Sample on the log-likelihood surface - this is the evaluation of an "expensive function".
+        If x (query points) are supplied, this function also returns the prediction value -- another "expensive function"
+        :param phi: List/array of parameters. The first parameter corresponds to the model variance. The second - penul-
+        timate items correspond to the model lengthscale in each dimensions. The last item corresponds to the Gaussian
         noise parameter
         The length of the parameter array must be exactly 2 more than the dimensionality of the data
+        :param x: List/array of query points. There can be multiple query points supplied at the same time.
         :return: the log-likelihood of the model evaluated.
         """
 
-        # Transform to exponentiated space
-        x = np.asarray(np.exp(x)).reshape(-1)
+        phi = np.asarray(phi).reshape(-1)
         # display(self.model)
-        assert len(x) == self.dimensions + 2
+        assert len(phi) == self.dimensions, 'The length of the parameter vector does not match the model dimensions!'
+        if x is not None:
+            assert x.shape[1] == self.dimensions - 2, 'The length of the data matrix does not match the model dimensions'
         # 2 extra dimensions to accommodate the Gaussian noise and model variance parameter of the RBF kernel
-        self.model.rbf.variance = x[0]
-        self.model.rbf.lengthscale = x[1:-1]
-        self.model.Gaussian_noise.variance = x[-1]
-        return self.model.log_likelihood()
+
+        # Change the parameters of the model
+        self.model.rbf.variance = phi[0]
+        self.model.rbf.lengthscale = phi[1:-1]
+        self.model.Gaussian_noise.variance = phi[-1]
+
+        # Compute the log likelihood
+        log_lik = self.model.log_likelihood()
+
+        # if x is supplied, now compute the prediction from the model as well
+        if x is not None:
+            pred = self.model.predict(x)
+            return log_lik, pred
+
+        return log_lik
+
+    # ------- Utility Functions --------
 
     def _collect_params(self) -> np.ndarray:
         """
         Collect the parameter values into a numpy n-d array
         :return: condensed numpy array of params
         """
-        res = np.array([0.]*(self.dimensions+2))
+        res = np.array([0.]*(self.dimensions))
         res[0] = self.model.rbf.variance
         res[1:-1] = self.model.rbf.lengthscale
         res[-1] = self.model.Gaussian_noise.variance

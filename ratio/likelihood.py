@@ -261,7 +261,7 @@ class GPLikelihood:
         if len(n_arrays) == 0:
             raise ValueError("No array is supplied!")
         n_s = [i.shape[0] for i in n_arrays.values()]
-        assert len(set(n_s)) == 1, "arrays in the n_arrays argument must be of the same first dimension!"
+        assert len(set(n_s)) == 1, "arrays in the n_arrays argument must be of the same first dimensions!"
         df = pd.DataFrame(np.stack(n_arrays.values(), axis=-1), columns=n_arrays.keys())
         df.to_csv('output/'+file_name+'.csv')
         print("Successfully saved ", file_name)
@@ -308,7 +308,7 @@ if __name__ == '__main__':
     # rb.plot_grd_posterior()
 
     pos = ParamPosterior(rb)
-    pos.smc()
+    pos.wsabi()
 
     exit()
 
