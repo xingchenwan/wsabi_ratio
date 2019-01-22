@@ -301,27 +301,20 @@ class GPLikelihood:
 
 # For testing purposes only
 if __name__ == '__main__':
+    from ratio.regression_quadrature import RegressionQuadrature
     from ratio.posterior import ParamPosterior
-    pr = Gaussian(mean=np.array([0, 0]), covariance=np.array([[2, 0],[0, 2]]))
-    rb = Rosenbrock2D(prior=pr)
 
-    # rb.plot_grd_posterior()
+    #pr = Gaussian(mean=np.array([0,0]), covariance=np.array([[2, 0],[0, 2]]))
+    #rb = Rosenbrock2D(prior=pr)
+    #exit()
+    #pos = ParamPosterior(rb)
+    #pos.wsabi()
+    #exit()
 
-    pos = ParamPosterior(rb)
-    pos.wsabi()
-
+    regression_model = GPRegressionFromFile()
+    rq = RegressionQuadrature(regression_model)
+    rq.wsabi()
     exit()
-
-    lik = GPLikelihood(rb)
-    lik.wsabi_bq()
-
-    exit()
-    gpr = GPRegressionFromFile()
-    lik = GPLikelihood(gpr)
-    # lik.maximum_likelihood()
-    lik.bmc()
-
-    lik.smc()
-
+    rq.mc()
 
 

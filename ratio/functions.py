@@ -219,7 +219,7 @@ class GPRegressionFromFile(Functions):
         super(GPRegressionFromFile, self).__init__()
         self.file_path = file_path
         self.X, self.Y = self.load_data()
-        self.dimensions = self.X.shape[1] + 2
+        self.dimensions = self.X.shape[1]
         self.n = self.X.shape[0]
 
         # Split the data into test set and training sets:
@@ -275,6 +275,17 @@ class GPRegressionFromFile(Functions):
         m = GPy.models.GPRegression(self.X_train, self.Y_train, ker)
         return m
 
+    def set_params(self, lengthscale:np.ndarray=None, variance:np.float=None, gaussian_noise:np.float=None):
+        if lengthscale is not None:
+            self.model.rbf.lengthscale = lengthscale
+            print("Lengthscale parameter set")
+        if variance is not None:
+            self.model.rbf.variance = variance
+            print("Variance parameter set")
+        if gaussian_noise is not None:
+            self.model.Gaussian_noise.variance = gaussian_noise
+            print("Gaussian Noise parameter set")
+
     def log_sample(self, phi: np.ndarray, x: np.ndarray = None):
         """
         Sample on the log-likelihood surface - this is the evaluation of an "expensive function".
@@ -284,30 +295,44 @@ class GPRegressionFromFile(Functions):
         noise parameter
         The length of the parameter array must be exactly 2 more than the dimensionality of the data
         :param x: List/array of query points. There can be multiple query points supplied at the same time.
-        :return: the log-likelihood of the model evaluated.
+        :return: the log-likelihood of the model evaluated and the gradient
         """
 
         phi = np.asarray(phi).reshape(-1)
-        # display(self.model)
         assert len(phi) == self.dimensions, 'The length of the parameter vector does not match the model dimensions!'
         if x is not None:
-            assert x.shape[1] == self.dimensions - 2, 'The length of the data matrix does not match the model dimensions'
+            if x.ndim == 1:
+                x = x.reshape(1, -1)
+            assert x.shape[1] == self.dimensions, 'The length of the data matrix does not match the model dimensions'
         # 2 extra dimensions to accommodate the Gaussian noise and model variance parameter of the RBF kernel
+        if np.all(phi == 0):
+            phi += 1e-10
+            # Perturb the parameter array slightly so that it is not all zero
+        if np.any(phi < 0.):
+            raise ValueError("Negative values of hyperparameter value encountered!")
 
         # Change the parameters of the model
-        self.model.rbf.variance = phi[0]
-        self.model.rbf.lengthscale = phi[1:-1]
-        self.model.Gaussian_noise.variance = phi[-1]
-
+        self.model.rbf.lengthscale = phi
         # Compute the log likelihood
         log_lik = self.model.log_likelihood()
+        # log_lik_grad = self.model._log_likelihood_gradients()
 
         # if x is supplied, now compute the prediction from the model as well
         if x is not None:
-            pred = self.model.predict(x)
-            return log_lik, pred
+            pred = self.model.predict(x)[0]
+            return log_lik, pred #log_lik_grad, pred
 
-        return log_lik
+        return log_lik, #log_lik_grad
+
+    def sample(self, phi: np.ndarray, x: np.ndarray):
+        return np.exp((self.log_sample(phi, x)))
+
+    # ----- Functions for the convenience of PyMC3 invokations ----- #
+    def log_lik_pymc(self, phi):
+        return (self.log_sample(phi))[0]
+
+    def log_lik_grad_pymc(self, phi):
+        return (self.log_sample(phi))[1]
 
     # ------- Utility Functions --------
 
@@ -428,3 +453,5 @@ class ProductOfGaussianMixture(Functions):
 
     def log_sample(self, x: Union[np.ndarray, float, list]):
         return np.log(self.sample(x))
+
+
