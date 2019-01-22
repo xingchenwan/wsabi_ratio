@@ -98,23 +98,21 @@ class RegressionQuadrature:
     def wsabi(self):
         # Allocating number of maximum evaluations
         budget = self.options['wsabi_budget']
-        test_x = self.gpr.X_test[4:5, :]
-        test_y = self.gpr.Y_test[4:5]
+        test_x = self.gpr.X_test[:10, :]
+        test_y = self.gpr.Y_test[:10]
 
         # Allocate memory of the samples and results
         log_phi = np.zeros((budget, self.gpr.dimensions,)) # The log-hyperparameter sampling points
         log_r = np.zeros((budget, )) # The log-likelihood function
         q = np.zeros((test_x.shape[0], budget)) # Prediction
-        log_rq = np.zeros((test_x.shape[0], budget))
-        rq = np.zeros((test_x.shape[0], budget))
 
         # Initial points - note that as per GPML convention, the hyperparameters are expressed in log scale
         # Initialise to the MAP estimate
         map_model, _ = self.maximum_a_posterior(num_restarts=1)
         self.gpr.set_params(variance=map_model.rbf.variance, gaussian_noise=map_model.Gaussian_noise.variance)
-        log_phi_initial = np.log(map_model.rbf.lengthscale).reshape(1, -1)
+        # log_phi_initial = np.log(map_model.rbf.lengthscale).reshape(1, -1)
+        log_phi_initial = np.zeros((1, self.dimensions))
         log_r_initial = self.gpr.log_sample(phi=np.exp(log_phi_initial))[0]
-        r_initial = np.exp(log_r_initial)
         pred = np.zeros((test_x.shape[0], ))
 
         # Setting up kernel - Note we only marginalise over the lengthscale terms, other hyperparameters are set to the
@@ -158,20 +156,27 @@ class RegressionQuadrature:
                 log_phi_i = log_phi[i_b, :]
                 log_r_i, q_i = self.gpr.log_sample(phi=np.exp(log_phi_i), x=test_x[i_x, :])
                 q[i_x, i_b] = q_i
-                # Update the model
+
+            # Discard hyperparameter samples that lead to negative prediction - there should not be neg predictions!
+            q_x = q[i_x, :]
+            nonneg_idx = q_x >= 0
+            q_x = q_x[nonneg_idx]
+            log_r_x = log_r[nonneg_idx]
+            log_phi_x = log_phi[nonneg_idx, :]
 
             # Do the same exponentiation and rescaling trick for q
-            log_rq[i_x, :] = log_r + np.log(q[i_x, :])
-            max_log_rq = np.max(log_rq[i_x, :])
-            rq[i_x, :] = np.exp(log_rq[i_x, :] - max_log_rq)
+            log_rq_x = log_r_x + np.log(q_x)
+            max_log_rq = np.max(log_rq_x)
+            rq = np.exp(log_rq_x - max_log_rq)
 
-            rq_gp = GPy.models.GPRegression(log_phi_initial, rq[i_x, :])
-            rq_model = WarpedIntegrandModel(WsabiLGP(rq_gp), self.prior)
+            rq_gp = GPy.models.GPRegression(log_phi_x, rq.reshape(-1, 1), kern)
             rq_gp.optimize()
+            rq_model = WarpedIntegrandModel(WsabiLGP(rq_gp), self.prior)
 
             # Now estimate the posterior
-            rq_int = np.exp(rq_model.integral_mean()[0] + max_log_rq)
+            rq_int = np.exp(np.log(rq_model.integral_mean()[0]) + max_log_rq)
             pred[i_x] = rq_int / r_int
+            print('Progress: ', i_x+1, '/', test_x.shape[0])
 
         rmse = self.compute_rmse(pred, test_y)
         print(pred, test_y)
@@ -190,6 +195,7 @@ class RegressionQuadrature:
         # Initial points - in log space
 
     # ----- Evaluation Metric ---- #
+
 
     def compute_rmse(self, y_pred: np.ndarray, y_grd: np.ndarray) -> float:
         """

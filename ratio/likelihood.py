@@ -313,6 +313,7 @@ if __name__ == '__main__':
 
     regression_model = GPRegressionFromFile()
     rq = RegressionQuadrature(regression_model)
+    # rq.maximum_a_posterior(num_restarts=1, max_iters=1000)
     rq.wsabi()
     exit()
     rq.mc()
