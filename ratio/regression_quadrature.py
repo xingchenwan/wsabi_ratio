@@ -98,8 +98,8 @@ class RegressionQuadrature:
     def wsabi(self):
         # Allocating number of maximum evaluations
         budget = self.options['wsabi_budget']
-        test_x = self.gpr.X_test[:10, :]
-        test_y = self.gpr.Y_test[:10]
+        test_x = self.gpr.X_test[10:20, :]
+        test_y = self.gpr.Y_test[10:20]
 
         # Allocate memory of the samples and results
         log_phi = np.zeros((budget, self.gpr.dimensions,)) # The log-hyperparameter sampling points
@@ -110,8 +110,7 @@ class RegressionQuadrature:
         # Initialise to the MAP estimate
         map_model, _ = self.maximum_a_posterior(num_restarts=1)
         self.gpr.set_params(variance=map_model.rbf.variance, gaussian_noise=map_model.Gaussian_noise.variance)
-        # log_phi_initial = np.log(map_model.rbf.lengthscale).reshape(1, -1)
-        log_phi_initial = np.zeros((1, self.dimensions))
+        log_phi_initial = np.log(map_model.rbf.lengthscale).reshape(1, -1)
         log_r_initial = self.gpr.log_sample(phi=np.exp(log_phi_initial))[0]
         pred = np.zeros((test_x.shape[0], ))
 
@@ -139,9 +138,18 @@ class RegressionQuadrature:
         r_gp = GPy.models.GPRegression(log_phi, r.reshape(-1, 1), kern)
         r_model = WarpedIntegrandModel(WsabiLGP(r_gp), self.prior)
         r_gp.optimize()
-        r_int = np.exp(np.log(r_model.integral_mean()[0]) + max_log_r)
+        r_int = np.exp(np.log(r_model.integral_mean()[0]) + max_log_r) # Model evidence
+        log_r_int = np.log(r_int) # Model log-evidence
         print("Estimate of model evidence: ", r_int,)
-        print("Model log-evidence ", np.log(r_int))
+        print("Model log-evidence ", log_r_int)
+
+        # Visualise the model parameter posterior
+        neg_log_post = np.array((budget, )) # Negative log-posterior
+        # rp = np.array((budget, ))
+        for i in range(budget):
+            neg_log_post[i] = - (log_r[i] + self.prior.log_eval(log_phi[i, :]) - log_r_int)
+        # Then train a GP for the log-posterior surface
+        log_posterior_gp = GPy.models.GPRegression(log_phi, neg_log_post.reshape(-1, 1), kern)
 
         # Secondly, compute and marginalise the predictive distribution for each individual points
         for i_x in range(test_x.shape[0]):
@@ -195,7 +203,6 @@ class RegressionQuadrature:
         # Initial points - in log space
 
     # ----- Evaluation Metric ---- #
-
 
     def compute_rmse(self, y_pred: np.ndarray, y_grd: np.ndarray) -> float:
         """
@@ -293,3 +300,8 @@ class LogLike(tt.Op):
         logl = self.likelihood(data)
 
         outputs[0][0] = np.array(logl) # output the log-likelihood
+
+
+def mcmc_draw_distribution():
+    pass
+
