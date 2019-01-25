@@ -5,8 +5,8 @@
 
 import pandas as pd
 import numpy as np
-import matplotlib
-matplotlib.use("TkAgg")
+#import matplotlib
+#matplotlib.use("TkAgg")
 # This is to prevent a macOS bug with matplotlib
 import matplotlib.pyplot as plt
 import GPy
@@ -299,23 +299,5 @@ class GPLikelihood:
         plt.show()
 
 
-# For testing purposes only
-if __name__ == '__main__':
-    from ratio.regression_quadrature import RegressionQuadrature
-    from ratio.posterior import ParamPosterior
-
-    #pr = Gaussian(mean=np.array([0,0]), covariance=np.array([[2, 0],[0, 2]]))
-    #rb = Rosenbrock2D(prior=pr)
-    #exit()
-    #pos = ParamPosterior(rb)
-    #pos.wsabi()
-    #exit()
-
-    regression_model = GPRegressionFromFile()
-    rq = RegressionQuadrature(regression_model)
-    # rq.maximum_a_posterior(num_restarts=1, max_iters=1000)
-    rq.wsabi()
-    exit()
-    rq.mc()
 
 

@@ -1,20 +1,17 @@
+import matplotlib
+matplotlib.use("TkAgg")
+# This is to prevent a macOS bug with matplotlib
 from ratio.test_1d import *
 import matplotlib.pyplot as plt
 from ratio.naive_quadratures import NaiveWSABI, NaiveBQ
 from bayesquad.priors import Gaussian
-from ratio.prior_1d import Gaussian1D
+from ratio.functions import Rosenbrock2D, GPRegressionFromFile
 from ratio.monte_carlo import MonteCarlo
-
-def plot_gauss_mix(r: GaussMixture, q: GaussMixture):
-    r.plot(label='$r(\phi) = p(z_d|\phi)$')
-    q.plot(label='$q(\phi) = p(y_*|z_d, \phi)$')
-
-    plt.xlabel("$\phi$")
-    plt.legend()
+from ratio.regression_quadrature import *
+from ratio.posterior import ParamPosterior
 
 
-if __name__ == "__main__":
-
+def one_d_example():
     r = GaussMixture(means=[-1, 2], covariances=[0.7, 2], weights=[0.1, 0.2])
 
     q = GaussMixture([0.5, 1.5, -1.5, -0.3, 0.2], [100, 1, 0.4, 0.2, 1], weights=[3, 0.5, 0.5, 0.2, -0.1])
@@ -24,16 +21,6 @@ if __name__ == "__main__":
     evidence = evidence_integral(r, prior_mean=0, prior_var=1)
     print(prediction, evidence, prediction/evidence)
     num, den, ratio = approx_integrals(prior, q, r)
-
-    #plot_gauss_mix(r, q)
-    #plt.show()
-
-    #naive_bq = NaiveBQ(r, q, prior, num_batches=203, batch_size=1, plot_iterations=False,
-    #                   display_step=50,
-    #                   true_prediction_integral=num, true_evidence_integral=den)
-    #naive_bq.quadrature()
-    #naive_bq.plot_result()
-    #plt.show()
 
     naive_wsabi = NaiveWSABI(r, q, prior, num_batches=200, display_step=100, plot_iterations=True,
                              true_prediction_integral=num, true_evidence_integral=den)
@@ -46,11 +33,25 @@ if __name__ == "__main__":
     mcmc.quadrature()
     mcmc.plot_result()
     plt.show()
-    #naive_wsabi.plot_samples()
-    #plt.show()
 
 
+def two_d_example():
+    pr = Gaussian(mean=np.array([0, 0]), covariance=np.array([[2, 0],[0, 2]]))
+    rb = Rosenbrock2D(prior=pr)
+    post = ParamPosterior(rb)
+    post.wsabi()
 
-    #plot_gauss_mix(r, q)
-    #naive_bq.plot_samples()
-    #plt.show()
+
+def multi_d_example():
+    regression_model = GPRegressionFromFile()
+    rq = RegressionQuadrature(regression_model)
+    model, _ = rq.maximum_a_posterior(num_restarts=1, max_iters=1000)
+    # rq.wsabi()
+    # ample_from_param_posterior(model)
+    # rq.mc()
+    #eval_wsabi_perf(rq)
+
+
+if __name__ == "__main__":
+    np.set_printoptions(threshold=1000)
+    multi_d_example()

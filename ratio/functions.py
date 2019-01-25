@@ -9,6 +9,9 @@ from abc import ABC
 from bayesquad.priors import Gaussian, Prior
 from scipy import integrate
 from scipy.stats import norm, multivariate_normal
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 class Functions(ABC):
@@ -214,10 +217,12 @@ class GPRegressionFromFile(Functions):
                   'Beam-draught Ratio',
                   'Length-beam Ratio',
                   'Froude Number',
-                  'Residuary Resistance Per Unit Weight of Displacement')
+                  'Residuary Resistance Per Unit Weight of Displacement'),
+                 y_offset = 0.,
                  ):
         super(GPRegressionFromFile, self).__init__()
         self.file_path = file_path
+        self.y_offset = y_offset
         self.X, self.Y = self.load_data()
         self.dimensions = self.X.shape[1]
         self.n = self.X.shape[0]
@@ -247,7 +252,7 @@ class GPRegressionFromFile(Functions):
         np.random.shuffle(raw_data)
 
         data_X = raw_data[:, :-1]
-        data_Y = raw_data[:, -1]
+        data_Y = raw_data[:, -1] + self.y_offset
 
         # Refactor to 2d array
         if data_Y.ndim == 1:
@@ -278,13 +283,13 @@ class GPRegressionFromFile(Functions):
     def set_params(self, lengthscale:np.ndarray=None, variance:np.float=None, gaussian_noise:np.float=None):
         if lengthscale is not None:
             self.model.rbf.lengthscale = lengthscale
-            print("Lengthscale parameter set")
+            logger.info("Lengthscale parameter set")
         if variance is not None:
             self.model.rbf.variance = variance
-            print("Variance parameter set")
+            logger.info("Variance parameter set")
         if gaussian_noise is not None:
             self.model.Gaussian_noise.variance = gaussian_noise
-            print("Gaussian Noise parameter set")
+            logger.info("Gaussian Noise parameter set")
 
     def log_sample(self, phi: np.ndarray, x: np.ndarray = None):
         """
@@ -298,38 +303,47 @@ class GPRegressionFromFile(Functions):
         :return: the log-likelihood of the model evaluated and the gradient
         """
 
-        phi = np.asarray(phi).reshape(-1)
-        assert len(phi) == self.dimensions, 'The length of the parameter vector does not match the model dimensions!'
+        # Sanity checks on phi
+        if phi.ndim == 1:
+            phi = np.asarray(phi).reshape(1, -1)
+        assert phi.shape[1] == self.dimensions, 'The length of the parameter vector does not match the model dimensions!, ' \
+                                            'Model dimension:'+str(self.dimensions)+" but given data is of "+str(len(phi)) \
+                                            + str(phi)
+        assert phi.ndim == 2, "Phi needs to be a 2-dimensional array!"
+        if np.any(phi < 0.):
+            raise ValueError("Negative values of hyperparameter value encountered! Hyperparameter requested", phi)
+
+        n, d = phi.shape
+        log_lik = np.empty((n, ))
+
+        # Sanity checks on x (if any)
         if x is not None:
             if x.ndim == 1:
                 x = x.reshape(1, -1)
             assert x.shape[1] == self.dimensions, 'The length of the data matrix does not match the model dimensions'
-        # 2 extra dimensions to accommodate the Gaussian noise and model variance parameter of the RBF kernel
-        if np.all(phi == 0):
-            phi += 1e-10
-            # Perturb the parameter array slightly so that it is not all zero
-        if np.any(phi < 0.):
-            raise ValueError("Negative values of hyperparameter value encountered!")
 
-        # Change the parameters of the model
-        self.model.rbf.lengthscale = phi
-        # Compute the log likelihood
-        log_lik = self.model.log_likelihood()
-        # log_lik_grad = self.model._log_likelihood_gradients()
+        pred = np.empty((n, ))
 
-        # if x is supplied, now compute the prediction from the model as well
+        for i in range(n):
+            # Change the parameters of the model
+            self.model.rbf.lengthscale = phi[i, :]
+            # Compute the log likelihood
+            log_lik[i] = self.model.log_likelihood()
+            # if x is supplied, now compute the prediction from the model as well
+            if x is not None:
+                pred[i] = self.model.predict(x)[0]
+
         if x is not None:
-            pred = self.model.predict(x)[0]
-            return log_lik, pred #log_lik_grad, pred
-
-        return log_lik, #log_lik_grad
+            return log_lik, pred
+        return log_lik, None
 
     def sample(self, phi: np.ndarray, x: np.ndarray):
         return np.exp((self.log_sample(phi, x)))
 
     # ----- Functions for the convenience of PyMC3 invokations ----- #
     def log_lik_pymc(self, phi):
-        return (self.log_sample(phi))[0]
+        self.model.rbf.lengthscale = phi
+        return self.model.log_likelihood()
 
     def log_lik_grad_pymc(self, phi):
         return (self.log_sample(phi))[1]
