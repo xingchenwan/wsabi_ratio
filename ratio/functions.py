@@ -281,15 +281,34 @@ class GPRegressionFromFile(Functions):
         return m
 
     def set_params(self, lengthscale:np.ndarray=None, variance:np.float=None, gaussian_noise:np.float=None):
+        """
+        Set hyperparameters
+        :return: None
+        """
         if lengthscale is not None:
             self.model.rbf.lengthscale = lengthscale
-            logger.info("Lengthscale parameter set")
+            logger.info("Lengthscale set")
         if variance is not None:
             self.model.rbf.variance = variance
-            logger.info("Variance parameter set")
+            logger.info("Variance set")
         if gaussian_noise is not None:
             self.model.Gaussian_noise.variance = gaussian_noise
-            logger.info("Gaussian Noise parameter set")
+            logger.info("Gaussian Noise set")
+
+    def reset_params(self, reset_lengthscale: bool=True, reset_variance: bool=False, reset_gaussian_noise: bool=False):
+        """
+        Reset hyperparameters to default values
+        :return: None
+        """
+        if reset_lengthscale is True:
+            self.model.rbf.lengthscale = np.array([0.2]*self.X.shape[1])
+            logger.info("Lengthscale reset")
+        if reset_variance is True:
+            self.model.rbf.variance = 0.2
+            logger.info("Variance reset")
+        if reset_gaussian_noise is True:
+            self.model.Gaussian_noise.variance = 0.2
+            logger.info("Gaussian Noise reset")
 
     def log_sample(self, phi: np.ndarray, x: np.ndarray = None):
         """

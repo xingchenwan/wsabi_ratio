@@ -45,10 +45,11 @@ def two_d_example():
 def multi_d_example():
     regression_model = GPRegressionFromFile()
     rq = RegressionQuadrature(regression_model)
-    model, _ = rq.maximum_a_posterior(num_restarts=1, max_iters=1000)
-    # rq.wsabi()
+    #model, _ = rq.maximum_a_posterior(num_restarts=1, max_iters=1000)
+    #eval_perf(rq, 'mc')
+    #rq.wsabi()
     # ample_from_param_posterior(model)
-    # rq.mc()
+    rq.bq()
     #eval_wsabi_perf(rq)
 
 
