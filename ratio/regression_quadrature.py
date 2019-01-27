@@ -22,12 +22,13 @@ from IPython.display import display
 import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+import time
 
 from emukit.model_wrappers.gpy_quadrature_wrappers import BaseGaussianProcessGPy, RBFGPy
 from emukit.quadrature.kernels import QuadratureRBF, IntegralBounds
 from emukit.quadrature.methods import VanillaBayesianQuadrature
 from emukit.quadrature.loop import VanillaBayesianQuadratureLoop
-from emukit.quadrature.acquisitions import  IntegralVarianceReduction
+
 
 class RegressionQuadrature:
     def __init__(self, regression_model: GPRegressionFromFile, **kwargs):
@@ -50,9 +51,10 @@ class RegressionQuadrature:
         local_gp = self.gp.copy()
 
         # Fetch and train data from the GPy GP object
-        X = self.gpr.X_train
-        Y = self.gpr.Y_train
-        X_test = self.gpr.X_test
+        X = self.gpr.X_train[:, :]
+        Y = self.gpr.Y_train[:]
+        X_test = self.gpr.X_test[:50, :]
+        Y_test = self.gpr.Y_test[:50]
         local_gp.set_XY(X, Y)
 
         # Assign prior to the hyperparameters
@@ -66,12 +68,14 @@ class RegressionQuadrature:
         # Optimise under MAP
         local_gp.optimize_restarts(num_restarts=num_restarts, max_iters=max_iters)
         pred, pred_var = local_gp.predict(X_test)
-        rmse = self.compute_rmse(pred, self.gpr.Y_test)
+        rmse = self.compute_rmse(pred, Y_test)
+        ll = self.compute_ll(pred, pred_var, Y_test)
         print('Root Mean Squared Error:', rmse)
+        print('LL:', ll)
         print('MAP lengthscale vector:', local_gp.rbf.lengthscale)
         if verbose:
             display(local_gp)
-            self.visualise(pred, self.gpr.Y_test)
+            self.visualise(pred, pred_var, Y_test)
         return local_gp, rmse
 
     def mc(self, verbose=True):
@@ -83,8 +87,8 @@ class RegressionQuadrature:
         :return: float: root mean squared error
         """
         budget = self.options['smc_budget']
-        test_x = self.gpr.X_test[:, :]
-        test_y = self.gpr.Y_test[:]
+        test_x = self.gpr.X_test[:50, :]
+        test_y = self.gpr.Y_test[:50]
         test_length = test_x.shape[0]
 
         # Fetch MAP values of variance and Gaussian noise
@@ -96,7 +100,7 @@ class RegressionQuadrature:
 
         # Sample the parameter posterior, note that we discard the first column (variance) and last column
         # (gaussian noise) since we are interested in marginalising the lengthscale hyperparameters only
-        samples = sample_from_param_posterior(self.gpr.model, budget, 1, False, False)
+        samples = sample_from_param_posterior(self.gpr.model, 1000, 1, False, False)
         samples = samples[:, 1:-1]
         logging.info("Parameter posterior sampling completed")
 
@@ -111,116 +115,132 @@ class RegressionQuadrature:
             y_preds_var[i, :] = (tmp_res[1]).reshape(-1)
             logging.info("Progress: "+str(i)+" / "+str(budget))
         pred = y_preds.sum(axis=0) / budget
-        rmse = self.compute_rmse(pred, self.gpr.Y_test)
-        if verbose:
-            self.visualise(pred, test_y)
+        pred_var = y_preds_var.sum(axis=0) / budget
+        rmse = self.compute_rmse(pred, test_y)
+        ll = self.compute_ll(pred, pred_var, test_y)
         print("Root Mean Squared Error", rmse)
-        return rmse
+        print("LL", ll)
+        if verbose:
+            self.visualise(pred, pred_var, test_y)
+        return rmse, ll
 
-    def bq(self):
+    def bq(self, verbose=True):
         """
         Marginalisation using vanilla Bayesian Quadrature - we use Amazon Emukit interface for this purpose
         :return:
         """
 
-        def _rp_emukit(x):
-            return self.gpr.log_sample(phi=np.exp(x))[0] + np.log(self.prior(x))
+        def _rp_emukit(x: np.ndarray) -> np.ndarray:
+            n, d = x.shape
+            res = np.exp(self.gpr.log_sample(phi=np.exp(x))[0] + np.log(self.prior(x)))
+            return np.array(res).reshape(n, 1)
 
         def rp_emukit():
             # Wrap around Emukit interface
             from emukit.core.loop.user_function import UserFunctionWrapper
             return UserFunctionWrapper(_rp_emukit), _rp_emukit
+        start = time.time()
 
         budget = self.options['naive_bq_budget']
-        test_x = self.gpr.X_test[:, :]
-        test_y = self.gpr.Y_test[:]
+        test_x = self.gpr.X_test[:50, :]
+        test_y = self.gpr.Y_test[:50]
 
-        q = np.zeros((test_x.shape[0], budget))
-        log_phi = np.zeros((budget, self.gpr.dimensions,)) # The log-hyperparameter sampling points
-        log_r = np.zeros((budget, )) # The log-likelihood function
+        q = np.zeros((test_x.shape[0], budget+1))
+        var = np.zeros((test_x.shape[0], budget+1))
 
         # Initial points - note that as per GPML convention, the hyperparameters are expressed in log scale
         # Initialise to the MAP estimate
         map_model, _ = self.maximum_a_posterior(num_restarts=1, max_iters=500, verbose=False)
         self.gpr.reset_params()
         self.gpr.set_params(variance=map_model.rbf.variance, gaussian_noise=map_model.Gaussian_noise.variance)
-        log_phi_initial = np.log(map_model.rbf.lengthscale).reshape(1, -1)
-        log_r_initial = self.gpr.log_sample(phi=np.exp(log_phi_initial))[0] + np.log(self.prior(log_phi_initial))
+        log_phi_initial = np.zeros((1, self.dimensions))
+        r_initial = np.exp(self.gpr.log_sample(phi=np.exp(log_phi_initial))[0] + np.log(self.prior(log_phi_initial)))
         pred = np.zeros((test_x.shape[0], ))
+        var_pred = np.zeros((test_x.shape[0], ))
 
-        # Setting up kernel - Note we only marginalise over the lengthscale terms, other hyperparameters are set to the
-        # MAP values.
         # Setting up kernel - Note we only marginalise over the lengthscale terms, other hyperparameters are set to the
         # MAP values.
         kern = GPy.kern.RBF(self.dimensions,
                             variance=2.,
                             lengthscale=2.)
 
-        log_r_gp = GPy.models.GPRegression(log_phi_initial, log_r_initial.reshape(1, -1), kern)
-        log_r_model = WarpedIntegrandModel(WsabiLGP(log_r_gp), self.prior)
+        r_gp = GPy.models.GPRegression(log_phi_initial, r_initial.reshape(1, -1), kern)
+        r_model = self._wrap_emukit(r_gp)
+        r_loop = VanillaBayesianQuadratureLoop(model=r_model)
 
         # Firstly, within the given allowance, compute an estimate of the model evidence. Model evidence is the common
         # denominator for all predictive distributions.
-        for i_a in range(budget):
-            log_phi_i = np.array(select_batch(log_r_model, 1, )).reshape(1, -1)
-            log_r_i = self.gpr.log_sample(phi=np.exp(log_phi_i))[0] + np.log(self.prior(log_phi_i))
+        r_loop.run_loop(user_function=rp_emukit()[0], stopping_condition=budget)
+        log_phi = r_loop.loop_state.X
+        r = r_loop.loop_state.Y.reshape(-1)
 
-            log_r[i_a] = log_r_i
-            log_phi[i_a, :] = log_phi_i
+        quad_time = time.time()
 
-            log_r_model.update(log_phi_i, log_r_i.reshape(1, -1))
-
-        max_log_r = np.max(log_r)
-        r = np.exp(log_r - max_log_r)
-        r_gp = GPy.models.GPRegression(log_phi, r.reshape(-1, 1), kern)
-        r_method = self._wrap_emukit(r_gp)
-
-        r_int = r_method.integrate()[0] # Model evidence
-        print("Estimate of model evidence: ", r_int * np.exp(max_log_r), )
-        print("Model log-evidence ", np.log(r_int) + max_log_r)
+        r_int = r_model.integrate()[0] # Model evidence
+        print("Estimate of model evidence: ", r_int, )
+        print("Model log-evidence ", np.log(r_int))
 
         for i_x in range(test_x.shape[0]):
 
             # Note that we do not active sample again for q, we just use the same samples sampled when we compute
             # the log-evidence
-            _, q_initial = self.gpr.log_sample(phi=np.exp(log_phi_initial), x=test_x[i_x, :])
+            _, q_initial, var_initial = self.gpr.log_sample(phi=np.exp(log_phi_initial), x=test_x[i_x, :])
 
             # Initialise GPy GP surrogate for and q(\phi)r(\phi)
             # Sample for q values
-            for i_b in range(budget):
+            q[i_x, 0] = q_initial
+            var[i_x, 0] = var_initial
+            for i_b in range(1, budget+1):
                 log_phi_i = log_phi[i_b, :]
-                _, q_i = self.gpr.log_sample(phi=np.exp(log_phi_i), x=test_x[i_x, :])
+                _, q_i, var_i = self.gpr.log_sample(phi=np.exp(log_phi_i), x=test_x[i_x, :])
                 q[i_x, i_b] = q_i
+                var[i_x, i_b] = var_i
             # Construct rq vector
             q_x = q[i_x, :]
+            var_x = var[i_x, :]
+
             rq = r * q_x
             rq_gp = GPy.models.GPRegression(log_phi, rq.reshape(-1, 1), kern)
-
-            # Now estimate the posterior
             rq_model = self._wrap_emukit(rq_gp)
             rq_int = rq_model.integrate()[0]
-            #print(rq_int)
+
+            rvar = r * var_x
+            rvar_gp = GPy.models.GPRegression(log_phi, rvar.reshape(-1, 1), kern)
+            rvar_model = self._wrap_emukit(rvar_gp)
+            rvar_int = rvar_model.integrate()[0]
+
+            # Now estimate the posterior
 
             pred[i_x] = rq_int / r_int
+            var_pred[i_x] = rvar_int / r_int
+
             logging.info('Progress: '+str(i_x+1)+'/'+str(test_x.shape[0]))
 
         rmse = self.compute_rmse(pred, test_y)
+        ll = self.compute_ll(pred, var_pred, test_y)
         logging.info(pred, test_y)
-        self.visualise(pred, test_y)
         print('Root Mean Squared Error:', rmse)
-        return rmse
+        print('LL:', ll)
+        end = time.time()
+        print("Active Sampling Time: ", quad_time-start)
+        print("Total Time elapsed: ", end-start)
+        if verbose:
+            self.visualise(pred, var_pred, test_y)
+        return rmse, ll, quad_time-start
 
     def wsabi(self, verbose=True):
         # Allocating number of maximum evaluations
+        start = time.time()
         budget = self.options['wsabi_budget']
         batch_count = 1
-        test_x = self.gpr.X_test[:, :]
-        test_y = self.gpr.Y_test[:]
+        test_x = self.gpr.X_test[:50, :]
+        test_y = self.gpr.Y_test[:50]
 
         # Allocate memory of the samples and results
         log_phi = np.zeros((budget*batch_count, self.gpr.dimensions,)) # The log-hyperparameter sampling points
         log_r = np.zeros((budget*batch_count, )) # The log-likelihood function
         q = np.zeros((test_x.shape[0], budget*batch_count)) # Prediction
+        var = np.zeros((test_x.shape[0], budget*batch_count)) # Posterior variance
 
         # Initial points - note that as per GPML convention, the hyperparameters are expressed in log scale
         # Initialise to the MAP estimate
@@ -231,6 +251,7 @@ class RegressionQuadrature:
         log_phi_initial = np.zeros((1, self.dimensions))
         log_r_initial = self.gpr.log_sample(phi=np.exp(log_phi_initial))[0]
         pred = np.zeros((test_x.shape[0], ))
+        pred_var = np.zeros((test_x.shape[0], ))
 
         # Setting up kernel - Note we only marginalise over the lengthscale terms, other hyperparameters are set to the
         # MAP values.
@@ -244,13 +265,16 @@ class RegressionQuadrature:
         # Firstly, within the given allowance, compute an estimate of the model evidence. Model evidence is the common
         # denominator for all predictive distributions.
         for i_a in range(budget):
-            log_phi_i = np.array(select_batch(log_r_model, batch_count, )).reshape(batch_count, -1)
+            log_phi_i = np.array(select_batch(log_r_model, batch_count, "Kriging Believer")).reshape(batch_count, -1)
             log_r_i = self.gpr.log_sample(phi=np.exp(log_phi_i))[0]
 
             log_r[i_a:i_a+batch_count] = log_r_i
             log_phi[i_a:i_a+batch_count, :] = log_phi_i
 
             log_r_model.update(log_phi_i, log_r_i.reshape(1, -1))
+
+        quad_time = time.time()
+
         max_log_r = max(log_r)
         r = np.exp(log_r - max_log_r)
         r_gp = GPy.models.GPRegression(log_phi[:1, :], np.sqrt(2 * r[0].reshape(1, 1)), kern)
@@ -276,17 +300,19 @@ class RegressionQuadrature:
 
             # Note that we do not active sample again for q, we just use the same samples sampled when we compute
             # the log-evidence
-            _, q_initial = self.gpr.log_sample(phi=np.exp(log_phi_initial), x=test_x[i_x, :])
+            _, q_initial, var_initial = self.gpr.log_sample(phi=np.exp(log_phi_initial), x=test_x[i_x, :])
 
             # Initialise GPy GP surrogate for and q(\phi)r(\phi)
             # Sample for q values
             for i_b in range(budget*batch_count):
                 log_phi_i = log_phi[i_b, :]
-                log_r_i, q_i = self.gpr.log_sample(phi=np.exp(log_phi_i), x=test_x[i_x, :])
+                log_r_i, q_i, var_i = self.gpr.log_sample(phi=np.exp(log_phi_i), x=test_x[i_x, :])
                 q[i_x, i_b] = q_i
+                var[i_x, i_b] = var_i
 
             # Enforce positivity in q
             q_x = q[i_x, :]
+            var_x = var[i_x, :]
             q_min = np.min(q_x)
             if q_min < 0:
                 q_x = q_x - q_min
@@ -305,15 +331,34 @@ class RegressionQuadrature:
 
             # Now estimate the posterior
             rq_int = np.exp(np.log(rq_model.integral_mean()[0]) + max_log_rq) + q_min * r_int
+
+            # Similar for variance
+            log_rvar_x = log_r + np.log(var_x)
+            max_log_rvar = np.max(log_rvar_x)
+            rvar = np.exp(log_rvar_x - max_log_rvar)
+            rvar_gp = GPy.models.GPRegression(log_phi[:1, :], np.sqrt(2 * rvar[0].reshape(1, 1)), kern)
+            rvar_model = WarpedIntegrandModel(WsabiLGP(rvar_gp), self.prior)
+            rvar_model.update(log_phi[1:, :], rvar[1:].reshape(-1, 1))
+            rvar_gp.optimize()
+
+            rvar_int = np.exp(np.log(rvar_model.integral_mean()[0]) + max_log_rvar)
+
             pred[i_x] = rq_int / r_int
+            pred_var[i_x] = rvar_int / r_int
+
             logging.info('Progress: '+str(i_x+1)+'/'+str(test_x.shape[0]))
 
         rmse = self.compute_rmse(pred, test_y)
+        ll = self.compute_ll(pred, pred_var, test_y)
+        print('Root Mean Squared Error:', rmse)
+        print('LL', ll)
+        end = time.time()
+        print("Active Sampling Time: ", quad_time-start)
+        print("Total Time: ", end-start)
         if verbose:
             logging.info(pred, test_y)
-            self.visualise(pred, test_y)
-        print('Root Mean Squared Error:', rmse)
-        return rmse
+            self.visualise(pred, pred_var, test_y)
+        return rmse, ll, quad_time-start
 
     def wsabi_ratio(self):
 
@@ -492,29 +537,42 @@ class RegressionQuadrature:
         rmse = np.sqrt(np.sum((y_pred - y_grd) ** 2) / length)
         return rmse
 
+    def compute_ll(self, y_pred: np.ndarray, y_var: np.ndarray, y_grd: np.ndarray) -> float:
+        from scipy.stats import norm
+        ll = 0.
+        y_pred = y_pred.reshape(-1)
+        y_var = y_var.reshape(-1)
+        y_grd = y_grd.reshape(-1)
+        for i in range(y_pred.shape[0]):
+            ll += norm.logpdf(y_grd[i], loc=y_pred[i], scale=np.sqrt(y_var[i]))
+        return ll
+
     def _wrap_emukit(self, gpy_gp: GPy.core.GP):
         #gpy_gp.optimize()
         rbf = RBFGPy(gpy_gp.kern)
-        qrbf = QuadratureRBF(rbf, integral_bounds=[(-np.inf, np.inf)] * self.dimensions)
+        qrbf = QuadratureRBF(rbf, integral_bounds=[(-10.,10.)] * self.dimensions)
         model = BaseGaussianProcessGPy(kern=qrbf, gpy_model=gpy_gp)
         method = VanillaBayesianQuadrature(base_gp=model)
         return method
 
-
     @staticmethod
-    def visualise(y_pred: np.ndarray, y_grd: np.ndarray):
-        plt.plot(y_pred, ".", color='red')
-        plt.plot(y_grd, ".", color='blue')
+    def visualise(y_pred: np.ndarray, y_var: np.ndarray, y_grd: np.ndarray):
+        xv = list(range(50))
+        plt.errorbar(xv, y_pred, yerr=np.sqrt(y_var), fmt='.', ecolor='r', capsize=2, label='Predictions +/- 1SD')
+        plt.plot(y_grd, ".", color='red', label='Ground Truth')
+        plt.legend()
+        plt.xlabel("Sample Number")
+        plt.ylabel("Predicted/Actual Value")
         plt.show()
 
     def _unpack_options(self,
                         prior_mean: Union[float, np.ndarray] = 0.,
                         prior_variance: Union[float, np.ndarray] = 2.,
-                        smc_budget: int = 300,
-                        naive_bq_budget: int = 100,
+                        smc_budget: int = 1000,
+                        naive_bq_budget: int = 300,
                         naive_bq_kern_lengthscale: float = 1.,
                         naive_bq_kern_variance: float = 1.,
-                        wsabi_budget: int = 100,
+                        wsabi_budget: int = 300,
                         posterior_range=(-5., 5.),
                         # The axis ranges between which the posterior samples are drawn
                         posterior_eps: float = 0.02,
@@ -601,21 +659,20 @@ def sample_from_param_posterior(gpy_gp, num_samples=1000, hmc_iters=10,
 
 # ---- Performance evaluation --------- #
 def eval_perf(rq: RegressionQuadrature, method: str):
-    sample_n = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 30, 50, 75, 100, 150]
-    rmse = np.empty((len(sample_n), ))
+    sample_n = [10, 15, 20, 30, 50, 75, 100, 120, 150, 200, 300]
+    res = np.empty((len(sample_n), 3))
     for i in range(len(sample_n)):
         if method == 'wsabi':
             rq.options['wsabi_budget'] = sample_n[i]
-            rmse[i] = rq.wsabi(verbose=False)
+            res[i, 0], res[i, 1], res[i, 2] = rq.wsabi(verbose=False)
         elif method == 'bq':
-            rmse[i] = rq.bq()
+            rq.options['naive_bq_budget'] = sample_n[i]
+            res[i, 0], res[i, 1], res[i, 2] = rq.bq(verbose=False)
         elif method == 'mc':
             rq.options['smc_budget'] = sample_n[i]
-            rmse[i] = rq.mc(verbose=False)
+            res[i, 0], res[i, 1] = rq.mc(verbose=False)
         else:
             raise NotImplemented()
-        logging.info('Progress:'+str(i)+' /'+str(len(sample_n)))
-        logging.info('RMSE: '+str(rmse[i]))
-    df = pd.Series(rmse, name=method+'_rmse_v_iterations')
+    df = pd.DataFrame(res, columns=['rmse', 'll', 'quad_time'])
     df.to_csv(method+'_perf.csv')
     logging.info(method+' evaluation completed')

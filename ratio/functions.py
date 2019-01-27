@@ -208,7 +208,7 @@ class GPRegressionFromFile(Functions):
     GP regression (the original GP regression), 1 variance hyperparameter and 1 Gaussian noise hyperparameter.
     """
     def __init__(self,
-                 test_set_ratio=0.3,
+                 test_set_ratio=0.5,
                  file_path="/Users/xingchenwan/Dropbox/4YP/Codes/wsabi_ratio/data/yacht_hydrodynamics.data.txt",
                  col_headers: tuple =
                  ('Longitudinal position of buoyancy centre',
@@ -342,6 +342,7 @@ class GPRegressionFromFile(Functions):
             assert x.shape[1] == self.dimensions, 'The length of the data matrix does not match the model dimensions'
 
         pred = np.empty((n, ))
+        var = np.empty((n, ))
 
         for i in range(n):
             # Change the parameters of the model
@@ -350,11 +351,11 @@ class GPRegressionFromFile(Functions):
             log_lik[i] = self.model.log_likelihood()
             # if x is supplied, now compute the prediction from the model as well
             if x is not None:
-                pred[i] = self.model.predict(x)[0]
+                pred[i], var[i] = self.model.predict(x)
 
         if x is not None:
-            return log_lik, pred
-        return log_lik, None
+            return log_lik, pred, var
+        return log_lik, None, None
 
     def sample(self, phi: np.ndarray, x: np.ndarray):
         return np.exp((self.log_sample(phi, x)))
