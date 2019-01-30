@@ -16,7 +16,7 @@ from bayesquad.priors import Gaussian
 from bayesquad.quadrature import OriginalIntegrandModel, WarpedIntegrandModel
 from bayesquad.batch_selection import select_batch, LOCAL_PENALISATION
 from bayesquad.gps import GP, WsabiLGP
-from ratio.functions import Functions, GPRegressionFromFile, Rosenbrock2D
+from ratio.functions import Functions, RBFGPRegression, Rosenbrock2D
 # GPy.plotting.change_plotting_library('plotly')
 
 

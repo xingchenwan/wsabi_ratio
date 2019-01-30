@@ -5,7 +5,7 @@ from ratio.test_1d import *
 import matplotlib.pyplot as plt
 from ratio.naive_quadratures import NaiveWSABI, NaiveBQ
 from bayesquad.priors import Gaussian
-from ratio.functions import Rosenbrock2D, GPRegressionFromFile
+from ratio.functions import *
 from ratio.monte_carlo import MonteCarlo
 from ratio.regression_quadrature import *
 from ratio.posterior import ParamPosterior
@@ -42,19 +42,24 @@ def two_d_example():
     post.wsabi()
 
 
-def multi_d_example():
-    regression_model = GPRegressionFromFile()
+def yacht():
+    regression_model = RBFGPRegression()
     rq = RegressionQuadrature(regression_model)
     rq.maximum_a_posterior(num_restarts=1, max_iters=300)
     #eval_perf(rq, 'wsabi')
     #exit()
+    rq.mc()
     rq.wsabi()
-    rq.bq()
+    #rq.bq()
     # ample_from_param_posterior(model)
     #rq.bq()
     #eval_wsabi_perf(rq)
 
+def sotonmet():
+    regression_model = PeriodicGPRegression(selected_cols=['Tide height (m)', 'True tide height (m)'])
+    rq = RegressionQuadrature(regression_model)
+    rq.maximum_a_posterior(num_restarts=1, max_iters=300)
 
 if __name__ == "__main__":
     np.set_printoptions(threshold=1000)
-    multi_d_example()
+    sotonmet()

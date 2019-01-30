@@ -1,17 +1,16 @@
-# Yacht Regression Experiment
 # Xingchen Wan | xingchen.wan@st-annes.ox.ac.uk | Jan 2019
 
-from ratio.functions import GPRegressionFromFile
+from ratio.functions import RBFGPRegression
 from bayesquad.priors import Gaussian
 import numpy as np
-from typing import Union
+from typing import Union, Tuple
 
 import matplotlib
 matplotlib.use("TkAgg")
 # This is to prevent a macOS bug with matplotlib
 import matplotlib.pyplot as plt
-import seaborn as sns
-import theano.tensor as tt
+#  import seaborn as sns
+#  import theano.tensor as tt
 import pandas as pd
 
 import GPy
@@ -31,10 +30,10 @@ from emukit.quadrature.loop import VanillaBayesianQuadratureLoop
 
 
 class RegressionQuadrature:
-    def __init__(self, regression_model: GPRegressionFromFile, **kwargs):
+    def __init__(self, regression_model: RBFGPRegression, **kwargs):
         self.gpr = regression_model
         self.options = self._unpack_options(**kwargs)
-        self.dimensions = self.gpr.dimensions
+        self.dimensions = self.gpr.param_dim
 
         # Parameter prior - note that the prior is in *log-space*
         self.prior = Gaussian(mean=self.options['prior_mean'].reshape(-1),
@@ -69,10 +68,11 @@ class RegressionQuadrature:
         local_gp.optimize_restarts(num_restarts=num_restarts, max_iters=max_iters)
         pred, pred_var = local_gp.predict(X_test)
         rmse = self.compute_rmse(pred, Y_test)
-        ll = self.compute_ll(pred, pred_var, Y_test)
+        ll, cs = self.compute_ll_cs(pred, pred_var, Y_test)
         print('Root Mean Squared Error:', rmse)
-        print('LL:', ll)
-        print('MAP lengthscale vector:', local_gp.rbf.lengthscale)
+        print('Log-likelihood:', ll)
+        print('Calibration Score:', cs)
+        # print('MAP lengthscale vector:', local_gp.rbf.lengthscale)
         if verbose:
             display(local_gp)
             self.visualise(pred, pred_var, Y_test)
@@ -96,11 +96,11 @@ class RegressionQuadrature:
         variance_map = map_model.rbf.variance
         gaussian_noise_map = map_model.Gaussian_noise.variance
         self.gpr.reset_params()
-        self.gpr.set_params(variance=variance_map,gaussian_noise=gaussian_noise_map)
+        self.gpr.set_params(variance=variance_map, gaussian_noise=gaussian_noise_map)
 
         # Sample the parameter posterior, note that we discard the first column (variance) and last column
         # (gaussian noise) since we are interested in marginalising the lengthscale hyperparameters only
-        samples = sample_from_param_posterior(self.gpr.model, 1000, 1, False, False)
+        samples = sample_from_param_posterior(self.gpr.model, 1000, 1, 'hmc', False)
         samples = samples[:, 1:-1]
         logging.info("Parameter posterior sampling completed")
 
@@ -117,9 +117,10 @@ class RegressionQuadrature:
         pred = y_preds.sum(axis=0) / budget
         pred_var = y_preds_var.sum(axis=0) / budget
         rmse = self.compute_rmse(pred, test_y)
-        ll = self.compute_ll(pred, pred_var, test_y)
+        ll, cs = self.compute_ll_cs(pred, pred_var, test_y)
         print("Root Mean Squared Error", rmse)
-        print("LL", ll)
+        print("Log-likelihood", ll)
+        print("Calibration Score", cs)
         if verbose:
             self.visualise(pred, pred_var, test_y)
         return rmse, ll
@@ -176,7 +177,7 @@ class RegressionQuadrature:
 
         quad_time = time.time()
 
-        r_int = r_model.integrate()[0] # Model evidence
+        r_int = r_model.integrate()[0]  # Model evidence
         print("Estimate of model evidence: ", r_int, )
         print("Model log-evidence ", np.log(r_int))
 
@@ -217,10 +218,11 @@ class RegressionQuadrature:
             logging.info('Progress: '+str(i_x+1)+'/'+str(test_x.shape[0]))
 
         rmse = self.compute_rmse(pred, test_y)
-        ll = self.compute_ll(pred, var_pred, test_y)
+        ll, cs = self.compute_ll_cs(pred, var_pred, test_y)
         logging.info(pred, test_y)
         print('Root Mean Squared Error:', rmse)
-        print('LL:', ll)
+        print('Log-likelihood:', ll)
+        print('Calibration Score:', cs)
         end = time.time()
         print("Active Sampling Time: ", quad_time-start)
         print("Total Time elapsed: ", end-start)
@@ -237,10 +239,10 @@ class RegressionQuadrature:
         test_y = self.gpr.Y_test[:50]
 
         # Allocate memory of the samples and results
-        log_phi = np.zeros((budget*batch_count, self.gpr.dimensions,)) # The log-hyperparameter sampling points
-        log_r = np.zeros((budget*batch_count, )) # The log-likelihood function
-        q = np.zeros((test_x.shape[0], budget*batch_count)) # Prediction
-        var = np.zeros((test_x.shape[0], budget*batch_count)) # Posterior variance
+        log_phi = np.zeros((budget*batch_count, self.dimensions,))  # The log-hyperparameter sampling points
+        log_r = np.zeros((budget*batch_count, ))  # The log-likelihood function
+        q = np.zeros((test_x.shape[0], budget*batch_count))  # Prediction
+        var = np.zeros((test_x.shape[0], budget*batch_count))  # Posterior variance
 
         # Initial points - note that as per GPML convention, the hyperparameters are expressed in log scale
         # Initialise to the MAP estimate
@@ -267,10 +269,8 @@ class RegressionQuadrature:
         for i_a in range(budget):
             log_phi_i = np.array(select_batch(log_r_model, batch_count, "Kriging Believer")).reshape(batch_count, -1)
             log_r_i = self.gpr.log_sample(phi=np.exp(log_phi_i))[0]
-
             log_r[i_a:i_a+batch_count] = log_r_i
             log_phi[i_a:i_a+batch_count, :] = log_phi_i
-
             log_r_model.update(log_phi_i, log_r_i.reshape(1, -1))
 
         quad_time = time.time()
@@ -293,7 +293,7 @@ class RegressionQuadrature:
         # for i in range(budget):
         #    neg_log_post[i] = (log_r[i] + self.prior.log_eval(log_phi[i, :]) - log_r_int)
         # Then train a GP for the log-posterior surface
-        #log_posterior_gp = GPy.models.GPRegression(np.exp(log_phi), np.exp(neg_log_post).reshape(-1, 1), kern)
+        # log_posterior_gp = GPy.models.GPRegression(np.exp(log_phi), np.exp(neg_log_post).reshape(-1, 1), kern)
 
         # Secondly, compute and marginalise the predictive distribution for each individual points
         for i_x in range(test_x.shape[0]):
@@ -349,9 +349,10 @@ class RegressionQuadrature:
             logging.info('Progress: '+str(i_x+1)+'/'+str(test_x.shape[0]))
 
         rmse = self.compute_rmse(pred, test_y)
-        ll = self.compute_ll(pred, pred_var, test_y)
+        ll, cs = self.compute_ll_cs(pred, pred_var, test_y)
         print('Root Mean Squared Error:', rmse)
-        print('LL', ll)
+        print('Log-likelihood', ll)
+        print('Calibration score', cs)
         end = time.time()
         print("Active Sampling Time: ", quad_time-start)
         print("Total Time: ", end-start)
@@ -372,21 +373,29 @@ class RegressionQuadrature:
             """
             return 0.5 * (warped_y ** 2) + alpha
 
-        def get_phi_s(phi_c):
+        def get_phi_s(phi_c, method='latin'):
             """
             Construct a Voronoi diagram and identify the locations of phi_s
             (See Bayesian Quadrature for Ratio paper for reasoning)
+            Method: 'latin' - latin hypercube sampling; 'voronoi' - voronoi diagram (caution: this method scales very
+            poorly in higher dimension!)
             """
+            # todo: implement the Latin Hypercube Sampling here!
             from scipy.spatial import Voronoi
-            vor = Voronoi(phi_c)
-            candidates = vor.vertices
+            if method == 'voronoi':
+                vor = Voronoi(phi_c)
+                candidates = vor.vertices
 
-            ub = np.amax(phi_c, axis=0) + 1  # Upper bound
-            lb = np.amin(phi_c, axis=0) - 1  # Lower bound
-            ub = np.tile(ub, (candidates.shape[0], 1))
-            candidates = candidates[~np.any(ub - candidates < 0, axis=1)]
-            lb = np.tile(lb, (candidates.shape[0], 1))
-            candidates = candidates[~np.any(candidates - lb < 0, axis=1)]
+                ub = np.amax(phi_c, axis=0) + 1  # Upper bound
+                lb = np.amin(phi_c, axis=0) - 1  # Lower bound
+                ub = np.tile(ub, (candidates.shape[0], 1))
+                candidates = candidates[~np.any(ub - candidates < 0, axis=1)]
+                lb = np.tile(lb, (candidates.shape[0], 1))
+                candidates = candidates[~np.any(candidates - lb < 0, axis=1)]
+            elif method == 'latin':
+                raise NotImplemented()
+            else:
+                raise NotImplemented()
             logging.info(str(candidates.shape[0])+" candidate phi_s points returned.")
             return candidates
 
@@ -397,7 +406,7 @@ class RegressionQuadrature:
         test_y = self.gpr.Y_test[:]
 
         # 1.2 Allocate memory of the samples and results
-        log_phi_c = np.zeros((budget * batch_count, self.gpr.dimensions,))  # The log-hyperparameter sampling points
+        log_phi_c = np.zeros((budget * batch_count, self.dimensions,))  # The log-hyperparameter sampling points
         log_r = np.zeros((budget * batch_count,))  # The log-likelihood function
         q = np.zeros((test_x.shape[0], budget * batch_count))  # Prediction
 
@@ -452,7 +461,7 @@ class RegressionQuadrature:
         log_m_rs[log_m_rs == -np.inf] = max_log_r
         log_r_gp = GPy.models.GPRegression(log_phi_c, log_r.reshape(-1, 1),)
         log_r_gp.optimize()
-        m_log_rs = log_r_gp.predict_noiseless(log_phi_s)[0] # Posterior mean of the GP over log(r)
+        m_log_rs = log_r_gp.predict_noiseless(log_phi_s)[0]  # Posterior mean of the GP over log(r)
         # print(m_log_rs)
         eta_rr = m_rs * (m_log_rs - log_m_rs)
         # Concatenate phi_c and 0 to the above vector
@@ -523,46 +532,76 @@ class RegressionQuadrature:
 
     # ----- Evaluation Metric ---- #
 
-    def compute_rmse(self, y_pred: np.ndarray, y_grd: np.ndarray) -> float:
+    @staticmethod
+    def compute_rmse(y_pred: np.ndarray, y_grd: np.ndarray) -> float:
         """
         Compute the root mean squared error between prediction (y_pred) with the ground truth y in the test set
         :param y_pred: a vector with the same length as the test set y
         :return: rmse
         """
+        if y_grd is None:
+            logger.warning("Ground truth is not provided - unable to produce RMSE result")
+            return np.nan
         y_pred = y_pred.reshape(-1)
         y_grd = y_grd.reshape(-1)
         length = y_pred.shape[0]
         assert length == y_grd.shape[0], "the length of the prediction vector does " \
-                                               "not match the ground truth vector!"
+                                         "not match the ground truth vector!"
         rmse = np.sqrt(np.sum((y_pred - y_grd) ** 2) / length)
         return rmse
 
-    def compute_ll(self, y_pred: np.ndarray, y_var: np.ndarray, y_grd: np.ndarray) -> float:
+    @staticmethod
+    def compute_ll_cs(y_pred: np.ndarray, y_var: np.ndarray, y_grd: np.ndarray) -> Tuple[float, float]:
+        """
+        Compute log-likelihood and calibration score using predictive mean, variance and the ground labels
+        :param y_pred:
+        :param y_var:
+        :param y_grd:
+        :return:
+        """
         from scipy.stats import norm
+        if y_grd is None:
+            logger.warning("Ground truth is not provided - unable to produce LL and CS results")
+            return np.nan, np.nan
         ll = 0.
         y_pred = y_pred.reshape(-1)
         y_var = y_var.reshape(-1)
         y_grd = y_grd.reshape(-1)
+        cs = 0
         for i in range(y_pred.shape[0]):
             ll += norm.logpdf(y_grd[i], loc=y_pred[i], scale=np.sqrt(y_var[i]))
-        return ll
+            ub = y_pred[i] + 0.67449 * np.sqrt(y_var[i])
+            lb = y_pred[i] - 0.67449 * np.sqrt(y_var[i])
+            if y_grd[i] >= lb and y_grd[i] <= ub:
+                cs += 1
+        return ll, cs / y_pred.shape[0]
 
     def _wrap_emukit(self, gpy_gp: GPy.core.GP):
-        #gpy_gp.optimize()
+        """
+        Wrap GPy GP around Emukit interface to enable subsequent quadrature
+        :param gpy_gp:
+        :return:
+        """
+        # gpy_gp.optimize()
         rbf = RBFGPy(gpy_gp.kern)
         qrbf = QuadratureRBF(rbf, integral_bounds=[(-10.,10.)] * self.dimensions)
         model = BaseGaussianProcessGPy(kern=qrbf, gpy_model=gpy_gp)
         method = VanillaBayesianQuadrature(base_gp=model)
         return method
 
-    @staticmethod
-    def visualise(y_pred: np.ndarray, y_var: np.ndarray, y_grd: np.ndarray):
-        xv = list(range(50))
-        plt.errorbar(xv, y_pred, yerr=np.sqrt(y_var), fmt='.', ecolor='r', capsize=2, label='Predictions +/- 1SD')
-        plt.plot(y_grd, ".", color='red', label='Ground Truth')
-        plt.legend()
-        plt.xlabel("Sample Number")
-        plt.ylabel("Predicted/Actual Value")
+    def visualise(self, y_pred: np.ndarray, y_var: np.ndarray, y_grd: np.ndarray):
+        if self.dimensions > 2:
+            # For higher dimension, we only show the comparison between the test data and the ground truth
+            xv = list(range(50))
+            plt.errorbar(xv, y_pred, yerr=np.sqrt(y_var), fmt='.', ecolor='r', capsize=2, label='Predictions +/- 1SD')
+            plt.plot(y_grd, ".", color='red', label='Ground Truth')
+            plt.legend()
+            plt.xlabel("Sample Number")
+            plt.ylabel("Predicted/Actual Value")
+        else:
+            # For lower dimensions, we can show the things such as the contour plot of the likelihood surface, the
+            # posterior and include a plot between independent and dependent variables.
+            raise NotImplemented
         plt.show()
 
     def _unpack_options(self,
@@ -572,18 +611,21 @@ class RegressionQuadrature:
                         naive_bq_budget: int = 300,
                         naive_bq_kern_lengthscale: float = 1.,
                         naive_bq_kern_variance: float = 1.,
-                        wsabi_budget: int = 300,
+                        wsabi_budget: int = 100,
                         posterior_range=(-5., 5.),
                         # The axis ranges between which the posterior samples are drawn
                         posterior_eps: float = 0.02,
                         ):
-        if self.gpr.dimensions > 1 and isinstance(prior_variance, float) and isinstance(prior_mean, float):
-            prior_mean = np.array([prior_mean] * (self.gpr.dimensions)).reshape(-1, 1)
-            prior_variance *= np.eye(self.gpr.dimensions)
+        if self.dimensions == 1:
+            prior_mean = np.array([prior_mean]).reshape(1, 1)
+            prior_variance = np.array([[prior_variance]]).reshape(1, 1)
+        elif self.dimensions > 1 and isinstance(prior_variance, float) and isinstance(prior_mean, float):
+            prior_mean = np.array([prior_mean] * (self.dimensions)).reshape(-1, 1)
+            prior_variance *= np.eye(self.dimensions)
         else:
-            assert len(prior_mean) == self.gpr.dimensions
+            assert len(prior_mean) == self.dimensions
             assert prior_variance.shape[0] == prior_variance.shape[1]
-            assert prior_variance.shape[0] == self.gpr.dimensions
+            assert prior_variance.shape[0] == self.dimensions
         return {
             'prior_mean': prior_mean,
             'prior_variance': prior_variance,
@@ -597,57 +639,18 @@ class RegressionQuadrature:
         }
 
 
-# Code lifted from PyMC3 Tutorial site
-
-# define a theano Op for our likelihood function
-class LogLike(tt.Op):
-
-    """
-    Specify what type of object will be passed and returned to the Op when it is
-    called. In our case we will be passing it a vector of values (the parameters
-    that define our model) and returning a single "scalar" value (the
-    log-likelihood)
-    """
-    itypes = [tt.dvector] # expects a vector of parameter values when called
-    otypes = [tt.dscalar] # outputs a single scalar value (the log likelihood)
-
-    def __init__(self, loglike,):# x):
-        """
-        Initialise the Op with various things that our log-likelihood function
-        requires. Below are the things that are needed in this particular
-        example.
-
-        Parameters
-        ----------
-        loglike:
-            The log-likelihood (or whatever) function we've defined
-        data:
-            The "observed" data that our log-likelihood function takes in
-        x:
-            The dependent variable (aka 'x') that our model requires
-        sigma:
-            The noise standard deviation that our function requires.
-        """
-
-        # add inputs as class attributes
-        self.likelihood = loglike
-        #self.x = x
-
-    def perform(self, node, inputs, outputs):
-        # the method that is used when calling the Op
-        data = inputs
-
-        # call the log-likelihood function
-        logl = self.likelihood(data)
-
-        outputs[0][0] = np.array(logl) # output the log-likelihood
-
-
 # -------- Parameter Posterior -------- #
-def sample_from_param_posterior(gpy_gp, num_samples=1000, hmc_iters=10,
+def sample_from_param_posterior(gpy_gp, num_samples=1000, mc_iters=10,
+                                mc_method='smc',
                                 save_csv=True, plot_samples=True):
-    hmc = GPy.inference.mcmc.HMC(gpy_gp, stepsize=2e-2)
-    t = hmc.sample(num_samples=num_samples, hmc_iters=hmc_iters)
+    if mc_method == 'smc':
+        mc = GPy.inference.mcmc.Metropolis_Hastings(gpy_gp)
+        t = mc.sample(Ntotal=num_samples)
+    elif mc_method == 'hmc':
+        mc = GPy.inference.mcmc.HMC(gpy_gp, stepsize=2e-2)
+        t = mc.sample(num_samples=num_samples, hmc_iters=mc_iters)
+    else:
+        raise NotImplemented
     if plot_samples:
         _ = plt.plot(t)
         plt.show()

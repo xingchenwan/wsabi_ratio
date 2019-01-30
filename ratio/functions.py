@@ -4,6 +4,7 @@ import GPy
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from IPython.display import display
 from typing import Union, Tuple
 from abc import ABC
 from bayesquad.priors import Gaussian, Prior
@@ -24,6 +25,8 @@ class Functions(ABC):
         self.grd_evidence = None
         self.grd_log_evidence = None
         self.grd_posterior_dist = None
+
+        self.param_dim = None
 
     def log_sample(self, x: Union[np.ndarray, float, list]) -> float:
         pass
@@ -166,7 +169,7 @@ class Rosenbrock2D(Functions):
         (sigma[0, 0], sigma[1, 1]) = \
             (integrate.dblquad(var_x, xmin, xmax, lambda x: ymin, lambda x: ymax)[0],
              integrate.dblquad(var_y, xmin, xmax, lambda x: ymin, lambda x: ymax)[0],)
-             #integrate.dblquad(var_xy, xmin, xmax, lambda x: ymin, lambda x: ymax)[0],)
+             # integrate.dblquad(var_xy, xmin, xmax, lambda x: ymin, lambda x: ymax)[0],)
         return mu, sigma
 
     # ----- Ground Truth Visualisation----- #
@@ -200,7 +203,7 @@ class Rosenbrock2D(Functions):
         plt.show()
 
 
-class GPRegressionFromFile(Functions):
+class RBFGPRegression(Functions):
     """
     Construct a GP regression object from file, then this object acts as a black box that outputs a likelihood function,
     from which we can build another GP surrogate to compute the marginal likelihood and the posterior distribution.
@@ -218,9 +221,9 @@ class GPRegressionFromFile(Functions):
                   'Length-beam Ratio',
                   'Froude Number',
                   'Residuary Resistance Per Unit Weight of Displacement'),
-                 y_offset = 0.,
+                 y_offset=0.,
                  ):
-        super(GPRegressionFromFile, self).__init__()
+        super(RBFGPRegression, self).__init__()
         self.file_path = file_path
         self.y_offset = y_offset
         self.X, self.Y = self.load_data()
@@ -237,6 +240,8 @@ class GPRegressionFromFile(Functions):
         self.kernel_option = 'rbf'
         self.model = self.init_gp_model()
         self.col_headers = col_headers
+
+        self.param_dim = self.dimensions # This value can be 6, 7 or 8.
 
     def load_data(self, plot_graph=False):
         raw_data = pd.read_csv(filepath_or_buffer=self.file_path, header=None, sep='\s+').values
@@ -280,7 +285,9 @@ class GPRegressionFromFile(Functions):
         m = GPy.models.GPRegression(self.X_train, self.Y_train, ker)
         return m
 
-    def set_params(self, lengthscale:np.ndarray=None, variance:np.float=None, gaussian_noise:np.float=None):
+    def set_params(self, lengthscale: np.ndarray = None,
+                   variance: np.float = None,
+                   gaussian_noise: np.float = None):
         """
         Set hyperparameters
         :return: None
@@ -360,14 +367,6 @@ class GPRegressionFromFile(Functions):
     def sample(self, phi: np.ndarray, x: np.ndarray):
         return np.exp((self.log_sample(phi, x)))
 
-    # ----- Functions for the convenience of PyMC3 invokations ----- #
-    def log_lik_pymc(self, phi):
-        self.model.rbf.lengthscale = phi
-        return self.model.log_likelihood()
-
-    def log_lik_grad_pymc(self, phi):
-        return (self.log_sample(phi))[1]
-
     # ------- Utility Functions --------
 
     def _collect_params(self) -> np.ndarray:
@@ -379,8 +378,164 @@ class GPRegressionFromFile(Functions):
         res[0] = self.model.rbf.variance
         res[1:-1] = self.model.rbf.lengthscale
         res[-1] = self.model.Gaussian_noise.variance
-        # This is the parameter we are interested in for the Diego paper
         return res
+
+
+class PeriodicGPRegression(Functions):
+    """
+    Regression using periodic GP kernel
+    """
+    def __init__(self,
+                 test_set_ratio=0.5,
+                 selected_cols: list=None,
+                 file_path='/Users/xingchenwan/Dropbox/4YP/Codes/wsabi_ratio/data/sotonmet.txt'):
+        self.file_path = file_path
+        super(PeriodicGPRegression, self).__init__()
+        self.X_train, self.Y_train, self.X_test, self.Y_test = self.load_univariate_series(test_col=selected_cols[0],
+                                                                                           grd_truth_col=selected_cols[1])
+        self.dimensions = self.X_train.shape[1]
+        # Initial hyperparameter estimate - will be used in reset
+        self.initial_lengthscale = 0.2
+        self.initial_variance = 0.2
+        self.initial_period = 1.
+        self.initial_jitter = 0.2
+        self.model, self.ker_dim = self.init_gp_model(self.X_train, self.Y_train)
+        self.param_dim = 2  # This value can be 2, 3 or 4.
+
+    def load_univariate_series(self, test_col: str, grd_truth_col: str = None, plot_graph=False, ) \
+            -> Tuple[np.ndarray, np.ndarray, np.ndarray, Union[np.ndarray, None]]:
+        """
+        Load a univariate series in the dataframe for GPRegression. Note that there is no ground truth for this case,
+        so only x_train, y_train and x_test supplied.
+        :param plot_graph:  whether to plot a graph for this univariate series
+        :param test_col: a singleton list containing the name of the column we would like to select from the
+        raw dataset. By default, this should be the periodic variable of the tide height.
+        :return:
+        """
+        raw_data = pd.read_csv(filepath_or_buffer=self.file_path)
+        assert test_col in list(raw_data.columns), test_col+" is not in the columns of the data!"
+        if grd_truth_col is not None:
+            assert grd_truth_col in list(raw_data.columns), grd_truth_col+" is not in the columns of the data!"
+
+        test_data = raw_data[test_col]
+        grd_truth_data = raw_data[grd_truth_col]
+        if plot_graph:
+            plt.plot(test_data, ".", label='Test Data')
+            plt.plot(grd_truth_data, color='r', label='Ground Truth')
+            plt.xlabel('Time (s)')
+            plt.ylabel(test_col)
+            plt.show()
+        # The non-NaN (or part of it) entries of the data will be used as training data; the NaN (missin data) will be
+        # inferred from subsequent experiment.
+
+        # First step, we simply use a univariate time series, regressing the tide height against time
+        Y_train = test_data.dropna()
+        X_train = np.array(list(Y_train.index))
+        Y_train = Y_train.values
+        data_null = test_data.isnull()
+        X_test = np.array(test_data[data_null].index)
+
+        if grd_truth_col is None:
+            Y_test = None
+        else:
+            Y_test = grd_truth_data.iloc[X_test].values.reshape(-1, 1)
+        # The index of data with missing entries. This will be used for prediction
+        assert Y_test.shape[0] == X_test.shape[0], "buggy code."
+        return X_train.reshape(-1, 1), Y_train.reshape(-1, 1), X_test.reshape(-1, 1), Y_test
+
+    def init_gp_model(self, x_train, y_train):
+        d = x_train.shape[1]
+        init_lengthscale = np.array([self.initial_lengthscale]*d)
+        init_var = self.initial_variance
+        init_period = self.initial_period
+
+        ker = GPy.kern.StdPeriodic(input_dim=d, lengthscale=init_lengthscale,
+                                   period=init_period, variance=init_var)
+        m = GPy.models.GPRegression(x_train, y_train, ker)
+        m.Gaussian_noise.variance = self.initial_jitter
+        #display(m)
+        ker_dim = len(m.param_array)
+        return m, ker_dim
+
+    def log_sample(self, phi: np.ndarray, x: np.ndarray = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Evaluate the log-likelihood at phi and return predictive mean and variance if x is applied
+        (see the documentation for log_sample in RBFRegression.#
+
+        Note: the input array for univariate case can either be of length 2, 3 or 4.
+        Length == 2: Only period and lengthscale parameters will be set
+        Length == 3: Period, lengthscale and variance parameters will be set
+        Length == 4: All hyperparameters will be set (and hence be subjected to marginalisation)
+        """
+        if phi.ndim == 1:
+            phi = np.array(phi).reshape(1, -1)
+        assert phi.ndim == 2, 'phi needs to be 1d or 2d only!'
+        if np.any(phi < 0.):
+            raise ValueError("phi needs to be a non-negative array!")
+
+        n, d = phi.shape
+        assert d <= self.ker_dim, "the length of phi must be smaller than equal to the kernel dimension!"
+        log_lik = np.empty((n, ))
+        pred = np.empty((n, ))
+        var = np.empty((n, ))
+
+        if x is not None:
+            if x.ndim == 1:
+                x = x.reshape(1, -1)
+            assert x.shape[1] == self.dimensions
+
+        for i in range(n):
+            if d >= 2:  # Marginalise lengthscale and period only
+                self.model.std_periodic.lengthscale = phi[i, 0]
+                self.model.std_periodic.period = phi[i, 1]
+            if d >= 3:  # Add in kernel variance marginalisation
+                self.model.std_periodic.variance = phi[i, 2]
+            if d == 4:  # Add in Gaussian noise marginalisation
+                self.model.Gaussian_noise.variance = phi[i, 3]
+            log_lik[i] = self.model.log_likelihood()
+            if x is not None:
+                pred[i], var[i] = self.model.predict_noiseless(x)
+
+        if x is not None:
+            return log_lik, pred, var
+        return log_lik, None, None
+
+    def set_params(self, lengthscale: np.ndarray = None,
+                   variance: np.float = None,
+                   period: np.ndarray = None,
+                   gaussian_noise: np.ndarray = None):
+        if lengthscale is not None:
+            self.model.std_periodic.lengthscale = lengthscale
+            logger.info("Lengthscale set at "+str(lengthscale))
+        if variance is not None:
+            self.model.std_periodic.variance = variance
+            logger.info("Variance set at"+str(variance))
+        if period is not None:
+            self.model.std_periodic.period = period
+            logger.info("Period set at "+str(period))
+        if gaussian_noise is not None:
+            self.model.Gaussian_noise.variance = gaussian_noise
+            logger.info("Gaussian noise set at "+str(gaussian_noise))
+
+    def reset_params(self, reset_lengthscale: bool=True,
+                     reset_variance: bool=False,
+                     reset_period: bool=True,
+                     reset_gaussian_noise:bool=False):
+        if reset_lengthscale is True:
+            self.model.std_periodic.lengthscale = self.initial_lengthscale
+            logger.info("Lengthscale reset at "+str(self.initial_lengthscale))
+        if reset_variance is True:
+            self.model.std_periodic.variance = self.initial_variance
+            logger.info("Variance reset at "+str(self.initial_variance))
+        if reset_period is True:
+            self.model.std_periodic.period = self.initial_period
+            logger.info("Period reset at "+str(self.initial_period))
+        if reset_gaussian_noise is True:
+            self.model.Gaussian_noise.variance = self.initial_jitter
+            logger.info("Gaussian noise reset at "+str(self.initial_jitter))
+
+    def _collect_params(self):
+        return self.model.param_array
 
 
 class GaussMixture(Functions):
