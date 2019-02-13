@@ -60,16 +60,16 @@ def plot_emu_sim_comparison(env, control_params, emulator, fidelity='single'):
         emulator, control_params, state_trajectory[0, :].copy(), fidelity=fidelity)
 
     f, axarr = plt.subplots(1, 3, figsize=(10, 3))
-    h1, = axarr[0].plot(state_trajectory_emu_mean[:, 0])
+    h1, = axarr[0].plot_fn_posterior(state_trajectory_emu_mean[:, 0])
 
-    h2, = axarr[0].plot(state_trajectory[:, 0])
+    h2, = axarr[0].plot_fn_posterior(state_trajectory[:, 0])
     axarr[0].set_title('Position')
-    axarr[1].plot(state_trajectory_emu_mean[:, 1])
-    axarr[1].plot(state_trajectory[:, 1])
+    axarr[1].plot_fn_posterior(state_trajectory_emu_mean[:, 1])
+    axarr[1].plot_fn_posterior(state_trajectory[:, 1])
     axarr[1].set_title('Velocity')
 
-    axarr[2].plot(control_inputs_emu_mean)
-    axarr[2].plot(control_inputs)
+    axarr[2].plot_fn_posterior(control_inputs_emu_mean)
+    axarr[2].plot_fn_posterior(control_inputs)
     axarr[2].set_title('Control Input')
     f.legend([h1, h2], ['Emulation', 'Simulation'], loc=4)
     plt.tight_layout()

@@ -11,6 +11,7 @@ from bayesquad.priors import Gaussian, Prior
 from scipy import integrate
 from scipy.stats import norm, multivariate_normal
 import logging
+import random
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -226,16 +227,10 @@ class RBFGPRegression(Functions):
         super(RBFGPRegression, self).__init__()
         self.file_path = file_path
         self.y_offset = y_offset
-        self.X, self.Y = self.load_data()
+        self.test_ratio = test_set_ratio
+        self.X, self.Y, self.X_train, self.Y_train, self.X_test, self.Y_test = self.load_data()
         self.dimensions = self.X.shape[1]
         self.n = self.X.shape[0]
-
-        # Split the data into test set and training sets:
-        n_training = int(self.n * (1 - test_set_ratio))
-        self.X_train = self.X[:n_training, :]
-        self.Y_train = self.Y[:n_training]
-        self.X_test = self.X[n_training:, :]
-        self.Y_test = self.Y[n_training:]
 
         self.kernel_option = 'rbf'
         self.model = self.init_gp_model()
@@ -243,7 +238,7 @@ class RBFGPRegression(Functions):
 
         self.param_dim = self.dimensions # This value can be 6, 7 or 8.
 
-    def load_data(self, plot_graph=False):
+    def load_data(self, plot_graph=False, test_pt=50):
         raw_data = pd.read_csv(filepath_or_buffer=self.file_path, header=None, sep='\s+').values
         if plot_graph:
             num_cols = len(raw_data.columns)
@@ -255,17 +250,26 @@ class RBFGPRegression(Functions):
 
         np.random.seed(4)
         np.random.shuffle(raw_data)
+        n_training = int(self.n * (1 - self.test_ratio))
 
-        data_X = raw_data[:, :-1]
-        data_Y = raw_data[:, -1] + self.y_offset
+        X_grd = raw_data[:, :-1]
+        Y_grd = raw_data[:, -1] + self.y_offset
+
+        test_pt = np.min(test_pt, self.n)
 
         # Refactor to 2d array
-        if data_Y.ndim == 1:
-            data_Y = data_Y.reshape(-1, 1)
-        if data_X.ndim == 1:
-            data_X = np.array([data_X])
-        assert data_X.shape[0] == data_Y.shape[0]
-        return data_X, data_Y
+        if Y_grd.ndim == 1:
+            Y_grd = Y_grd.reshape(-1, 1)
+        if X_grd.ndim == 1:
+            X_grd = np.array([X_grd])
+        assert X_grd.shape[0] == Y_grd.shape[0]
+
+        X_train = X_grd[:n_training, :]
+        Y_train = Y_grd[:n_training, :]
+        X_test = X_grd[n_training:, :]
+        Y_test = Y_grd[n_training:]
+
+        return X_grd, Y_grd, X_train, Y_train, X_test, Y_test,
 
     def init_gp_model(self):
         """
@@ -386,13 +390,19 @@ class PeriodicGPRegression(Functions):
     Regression using periodic GP kernel
     """
     def __init__(self,
-                 test_set_ratio=0.5,
+                 train_ratio=0.5,
+                 n_test=50,
                  selected_cols: list=None,
                  file_path='/Users/xingchenwan/Dropbox/4YP/Codes/wsabi_ratio/data/sotonmet.txt'):
         self.file_path = file_path
         super(PeriodicGPRegression, self).__init__()
-        self.X_train, self.Y_train, self.X_test, self.Y_test = self.load_univariate_series(test_col=selected_cols[0],
-                                                                                           grd_truth_col=selected_cols[1])
+        self.train_ratio = train_ratio
+        self.n_test = n_test
+
+        #Initialise variables
+        self.X_train, self.Y_train, self.X_test, self.Y_test, self.X_grd, self.Y_grd \
+            = self.load_univariate_series(test_col=selected_cols[0], grd_truth_col=selected_cols[1])
+
         self.dimensions = self.X_train.shape[1]
         # Initial hyperparameter estimate - will be used in reset
         self.initial_lengthscale = 0.2
@@ -400,10 +410,10 @@ class PeriodicGPRegression(Functions):
         self.initial_period = 1.
         self.initial_jitter = 0.2
         self.model, self.ker_dim = self.init_gp_model(self.X_train, self.Y_train)
-        self.param_dim = 2  # This value can be 2, 3 or 4.
+        self.param_dim = 4  # This value can be 2, 3 or 4.
 
-    def load_univariate_series(self, test_col: str, grd_truth_col: str = None, plot_graph=False, ) \
-            -> Tuple[np.ndarray, np.ndarray, np.ndarray, Union[np.ndarray, None]]:
+    def load_univariate_series(self, test_col: str, grd_truth_col: str = None, plot_graph=False,
+                               ):
         """
         Load a univariate series in the dataframe for GPRegression. Note that there is no ground truth for this case,
         so only x_train, y_train and x_test supplied.
@@ -412,11 +422,14 @@ class PeriodicGPRegression(Functions):
         raw dataset. By default, this should be the periodic variable of the tide height.
         :return:
         """
+        random.seed(4)
         raw_data = pd.read_csv(filepath_or_buffer=self.file_path)
         assert test_col in list(raw_data.columns), test_col+" is not in the columns of the data!"
         if grd_truth_col is not None:
             assert grd_truth_col in list(raw_data.columns), grd_truth_col+" is not in the columns of the data!"
-
+        drop_n = int(1. / self.train_ratio)
+        raw_data = raw_data.iloc[::drop_n]
+        raw_data.reset_index(inplace=True)
         test_data = raw_data[test_col]
         grd_truth_data = raw_data[grd_truth_col]
         if plot_graph:
@@ -429,6 +442,8 @@ class PeriodicGPRegression(Functions):
         # inferred from subsequent experiment.
 
         # First step, we simply use a univariate time series, regressing the tide height against time
+        Y_grd = grd_truth_data.values
+        X_grd = np.array(list(test_data.index))
         Y_train = test_data.dropna()
         X_train = np.array(list(Y_train.index))
         Y_train = Y_train.values
@@ -438,10 +453,18 @@ class PeriodicGPRegression(Functions):
         if grd_truth_col is None:
             Y_test = None
         else:
-            Y_test = grd_truth_data.iloc[X_test].values.reshape(-1, 1)
+            Y_test = grd_truth_data.iloc[X_test].values
+
+        if self.n_test is not None:
+            test_pt = np.minimum(self.n_test, len(Y_test))
+            test_idx = np.array(random.sample(range(len(Y_test)), test_pt))
+            Y_test = Y_test[test_idx]
+            X_test = X_test[test_idx]
+
         # The index of data with missing entries. This will be used for prediction
         assert Y_test.shape[0] == X_test.shape[0], "buggy code."
-        return X_train.reshape(-1, 1), Y_train.reshape(-1, 1), X_test.reshape(-1, 1), Y_test
+        return X_train.reshape(-1, 1),  Y_train.reshape(-1, 1), X_test.reshape(-1, 1), \
+               Y_test.reshape(-1, 1), X_grd.reshape(-1, 1), Y_grd.reshape(-1, 1)
 
     def init_gp_model(self, x_train, y_train):
         d = x_train.shape[1]
@@ -535,7 +558,18 @@ class PeriodicGPRegression(Functions):
             logger.info("Gaussian noise reset at "+str(self.initial_jitter))
 
     def _collect_params(self):
-        return self.model.param_array
+        gpy_array = self.model.param_array
+        param_array = np.empty(len(gpy_array), )
+        # Slight confusion in re-ordering...
+        # Lengthscale
+        param_array[0] = gpy_array[2]
+        # Period
+        param_array[1] = gpy_array[1]
+        # Kernel Variance
+        param_array[2] = gpy_array[0]
+        # Noise Variance
+        param_array[3] = gpy_array[3]
+        return param_array
 
 
 class GaussMixture(Functions):

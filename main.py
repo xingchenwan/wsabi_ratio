@@ -9,6 +9,7 @@ from ratio.functions import *
 from ratio.monte_carlo import MonteCarlo
 from ratio.regression_quadrature import *
 from ratio.posterior import ParamPosterior
+from ratio.posterior_mc_inference import PosteriorMCSampler
 
 
 def one_d_example():
@@ -45,20 +46,29 @@ def two_d_example():
 def yacht():
     regression_model = RBFGPRegression()
     rq = RegressionQuadrature(regression_model)
-    rq.maximum_a_posterior(num_restarts=1, max_iters=300)
+    # rq.maximum_a_posterior(num_restarts=1, max_iters=1000)
+
     #eval_perf(rq, 'wsabi')
     #exit()
-    rq.mc()
-    rq.wsabi()
+    rq.bq()
+    #rq.wsabi()
     #rq.bq()
-    # ample_from_param_posterior(model)
     #rq.bq()
     #eval_wsabi_perf(rq)
 
 def sotonmet():
-    regression_model = PeriodicGPRegression(selected_cols=['Tide height (m)', 'True tide height (m)'])
+    regression_model = PeriodicGPRegression(selected_cols=['Tide height (m)', 'True tide height (m)'],
+                                            n_test=15, train_ratio=0.2)
     rq = RegressionQuadrature(regression_model)
-    rq.maximum_a_posterior(num_restarts=1, max_iters=300)
+    # t = PosteriorMCSampler(rq.gpr.model).hmc(num_iters=1000, mode='gpflow')
+    # t.plot()
+    # plt.show()
+    # optimised_model, _, _ = rq.maximum_a_posterior(num_restarts=1, max_iters=1000, verbose=True)
+    # rq.options['prior_mean'] = np.array(np.log(optimised_model.param_array)).reshape(-1)
+    # rq.reset_prior()
+    # rq.wsabi()
+    eval_perf(rq, 'bq')
+
 
 if __name__ == "__main__":
     np.set_printoptions(threshold=1000)
