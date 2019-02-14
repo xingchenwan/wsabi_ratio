@@ -69,7 +69,15 @@ def sotonmet():
     # rq.wsabi()
     eval_perf(rq, 'bq')
 
+def svm():
+    from ratio.svm import SVMClassification
+    from ratio.classification_quadrature import ClassificationQuadrature
+    svm = SVMClassification()
+    cq = ClassificationQuadrature(svm)
+    cq.maximum_likelihood()
+    # cq.wsabi()
+
 
 if __name__ == "__main__":
     np.set_printoptions(threshold=1000)
-    sotonmet()
+    svm()
