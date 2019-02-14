@@ -9,8 +9,10 @@ This repository contains the codes for Xingchen Wan's Fourth-year project (4YP) 
 Main Contents
 
 * **Synthetic Test Functions:** 1D and multidimensional Gaussian mixtures, 2D Rosenbrock function
-* **Experiment on real data:** Hydrodynamics dataset [2], Sotonmet [data](http://www.robots.ox.ac.uk/~mosb/teaching/AIMS_CDT/sotonmet.txt) 
-* **Methods**: MLE/MAP, Markov-chain Monte Carlo, Vanilla Bayesian Quadrature, Fast Warped Bayesian Quadrature
+* **Experiment on real data:** 
+* GP Regression: Hydrodynamics dataset [2], Sotonmet [data](http://www.robots.ox.ac.uk/~mosb/teaching/AIMS_CDT/sotonmet.txt) 
+* SVM Classification: Wisconsin Breast Cancer [data](https://archive.ics.uci.edu/ml/machine-learning-databases/breast-cancer-wisconsin/)
+* **Methods**: MLE/MAP, Grid Search (For SVM) Markov-chain Monte Carlo, Vanilla Bayesian Quadrature, Fast Warped Bayesian Quadrature
 
 The codes have been written and tested under Anaconda Python 3.6. Other dependent packages include:
 * GPy
@@ -33,4 +35,4 @@ Vancouver
 Vancouver	
 
 
-Updated 30 Jan 2019 | Xingchen Wan | xingchen.wan@st-annes.ox.ac.uk
+Updated 14 Feb 2019 | Xingchen Wan | xingchen.wan@st-annes.ox.ac.uk
