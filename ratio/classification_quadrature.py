@@ -37,7 +37,7 @@ class ClassificationQuadrature:
         self.prior = Gaussian(mean=self.options['prior_mean'].reshape(-1),
                               covariance=self.options['prior_variance'])
 
-    def maximum_likelihood(self):
+    def maximum_likelihood(self, mode='mle'):
         """
         The more Bayesian way of model selection - compute the maximum likelihood estimate
         :return:
@@ -46,30 +46,150 @@ class ClassificationQuadrature:
         def neg_log_lik(log_phi: np.ndarray):
             return -self.model.log_sample(np.exp(log_phi))[0]
 
-        self.plot_log_lik()
+        def neg_log_posterior(log_phi: np.ndarray):
+            return neg_log_lik(log_phi) + np.log(self.prior(log_phi.reshape(1, -1)))
 
+        self.plot_log_lik()
         x_test, y_test = self.model.X_test, self.model.Y_test
         log_phi0 = np.array([0.]*self.dimensions)
-        bounds = Bounds([1e-10, 1e-10], [np.inf, np.inf]) # Enforce non-negativity in gamma and C optimisation
 
-        phi_mle = minimize(neg_log_lik, log_phi0, bounds=bounds).x
-        logging.info("MLE Hyperparameter: "+str(phi_mle))
-        y_pred = self.model.predict(c=np.exp(phi_mle[0]), gamma=np.exp(phi_mle[1]), x_test=x_test)
+        if mode == 'mle':
+            phi_mle = minimize(neg_log_lik, log_phi0, options={'eps': 0.1,}).x
+        else:
+            phi_mle = minimize(neg_log_posterior, log_phi0, options={'eps': 0.1,}).x
+        logging.info("MLE/MAP Hyperparameter: "+str(phi_mle))
+        logging.info("MLE/MAP Negative Log-likelihood: "+str(neg_log_lik(phi_mle)))
+        if self.dimensions == 2:
+            y_pred = self.model.predict(c=np.exp(phi_mle[0]), gamma=np.exp(phi_mle[1]), x_test=x_test)
+        else:
+            y_pred = self.model.predict(c=np.exp(phi_mle[0]), gamma=np.exp(phi_mle[1]),
+                                        alpha=np.exp(phi_mle[2]), beta=np.exp(phi_mle[3]),
+                                        x_test=x_test)
         labels = y_pred.copy()
         labels[labels < 0.5] = 0
         labels[labels >= 0.5] = 1
+        print(np.squeeze(labels), np.squeeze(y_test))
         accuracy, precision, recall, f1 = self.model.score(labels, y_test.reshape(-1))
+
         logging.info("Accuracy: "+str(accuracy))
         logging.info("Precision: "+str(precision))
         logging.info("Recall: "+str(recall))
         logging.info("F1 score: "+str(f1))
 
-    def grid_search(self):
+    def grid_search(self, bounds=((-5, 5), (-7, 0)), n_points=25, objective='precision'):
         """
         The frequentist approach to SVM parameter search - grid search the hyperparameters...
         :return:
         """
-        pass
+        logging.info("Optimizing against "+objective)
+        log_lik, best_param, [accuracy, precision, recall, f1] = self.model.grid_search\
+            (bounds=bounds, n_points=n_points, objective=objective)
+        logging.info("Grid search optimal parameters: "+str(best_param))
+        logging.info("Log-likelihood: "+str(log_lik))
+        logging.info("Accuracy: " + str(accuracy))
+        logging.info("Precision: " + str(precision))
+        logging.info("Recall: " + str(recall))
+        logging.info("F1 score: " + str(f1))
+
+    def bq(self, verbose=True):
+        """
+        Marginalisation using vanilla Bayesian Quadrature - we use Amazon Emukit interface for this purpose
+        :return:
+        """
+
+        def _rp_emukit(x: np.ndarray) -> np.ndarray:
+            n, d = x.shape
+            res = np.exp(self.model.log_sample(phi=np.exp(x))[0])# + np.log(self.prior(x)))
+            logging.info("Query point"+str(x)+" .Log Likelihood: "+str(-np.log(res)))
+            return np.array(res).reshape(n, 1)
+
+        def rp_emukit():
+            # Wrap around Emukit interface
+            from emukit.core.loop.user_function import UserFunctionWrapper
+            return UserFunctionWrapper(_rp_emukit), _rp_emukit
+        start = time.time()
+
+        budget = self.options['naive_bq_budget']
+        test_x = self.model.X_test
+        test_y = self.model.Y_test
+
+        q = np.zeros((test_x.shape[0], budget+1))
+
+        log_phi_initial = np.zeros(self.dimensions).reshape(1, -1)
+        r_initial = np.exp(self.model.log_sample(phi=np.exp(log_phi_initial))[0]) # + np.log(self.prior(log_phi_initial)))
+        pred = np.zeros((test_x.shape[0], ))
+
+        # Setting up kernel - Note we only marginalise over the lengthscale terms, other hyperparameters are set to the
+        # MAP values.
+        kern = GPy.kern.RBF(self.dimensions,
+                            variance=1.,
+                            lengthscale=1.)
+
+        r_gp = GPy.models.GPRegression(log_phi_initial, r_initial.reshape(1, -1), kern)
+        r_model = self._wrap_emukit(r_gp)
+        r_loop = VanillaBayesianQuadratureLoop(model=r_model)
+
+        # Firstly, within the given allowance, compute an estimate of the model evidence. Model evidence is the common
+        # denominator for all predictive distributions.
+        r_loop.run_loop(user_function=rp_emukit()[0], stopping_condition=budget)
+        log_phi = r_loop.loop_state.X
+        r = r_loop.loop_state.Y.reshape(-1)
+
+        quad_time = time.time()
+
+        r_int = r_model.integrate()[0]  # Model evidence
+        print("Estimate of model evidence: ", r_int, )
+        print("Model log-evidence ", np.log(r_int))
+
+        for i_x in range(test_x.shape[0]):
+
+            # Note that we do not active sample again for q, we just use the same samples sampled when we compute
+            # the log-evidence
+            q_initial, _ = self.model.log_sample(phi=np.exp(log_phi_initial), x=test_x[i_x, :])
+
+            # Initialise GPy GP surrogate for and q(\phi)r(\phi)
+            # Sample for q values
+            q[i_x, 0] = q_initial
+            for i_b in range(1, budget+1):
+                log_phi_i = log_phi[i_b, :]
+                _, q_i = self.model.log_sample(phi=np.exp(log_phi_i), x=test_x[i_x, :])
+                q[i_x, i_b] = q_i
+            # Construct rq vector
+            q_x = q[i_x, :]
+
+            rq = r * q_x
+            rq_gp = GPy.models.GPRegression(log_phi, rq.reshape(-1, 1), kern)
+            rq_model = self._wrap_emukit(rq_gp)
+            rq_int = rq_model.integrate()[0]
+
+            # Now estimate the posterior
+
+            pred[i_x] = rq_int / r_int
+
+            logging.info('Progress: '+str(i_x+1)+'/'+str(test_x.shape[0]))
+
+        labels = pred.copy()
+        labels[labels < 0.5] = 0
+        labels[labels >= 0.5] = 1
+        labels = np.squeeze(labels)
+        non_zero = np.count_nonzero(np.squeeze(test_y) - np.squeeze(labels))
+        accuracy, precision, recall, f1 = self.model.score(np.squeeze(test_y), labels)
+        test_y = np.squeeze(test_y)
+        # logging.info(pred, test_y)
+        print("------- Vanilla BQ Summary -------")
+        print("Number of mismatch: "+str(non_zero))
+        print('Accuracy:', accuracy)
+        print('Precision:', precision)
+        print('Recall:', recall)
+        print('F1: ',f1)
+        if verbose:
+            print("Ground truth labels: "+str(test_y))
+            print("Predictions: "+str(labels))
+            print('Predictive Probabilities: '+str(pred))
+        end = time.time()
+        print("Active Sampling Time: ", quad_time-start)
+        print("Total Time elapsed: ", end-start)
+        return accuracy, precision, recall, f1
 
     def wsabi(self, verbose=True):
         # Allocating number of maximum evaluations
@@ -164,6 +284,8 @@ class ClassificationQuadrature:
             # Similar for variance
             pred[i_x] = rq_int / r_int
             logging.info('Progress: ' + str(i_x + 1) + '/' + str(test_x.shape[0]))
+            if verbose:
+                logging.info('Prediction'+str(pred[i_x])+' .Label: '+str(test_y[i_x]))
 
         labels = pred.copy()
         labels[labels < 0.5] = 0
@@ -189,13 +311,14 @@ class ClassificationQuadrature:
 
     def plot_log_lik(self):
         if self.dimensions > 2:
-            raise ValueError("Visualistion is not available for higher dimension data!")
-        x = np.linspace(-5, 5, 25)
-        y = np.linspace(-7, 0, 25)
+            logging.warning("Visualisation is not available for higher dimension data!")
+            return
+        x = np.linspace(-5, 3, 30)
+        y = np.linspace(-7, 2, 30)
         xv = np.stack(np.meshgrid(x, y, indexing='ij'), axis=-1).reshape(-1, 2)
         z = np.empty(xv.shape[0])
         for i in range(xv.shape[0]):
-            z[i] = self.model.log_sample(np.exp(xv[i, :]))[0]
+            z[i] = -self.model.log_sample(np.exp(xv[i, :]))[0]
         X, Y = np.meshgrid(x, y)
         Z = griddata(xv, z, (X, Y), method='cubic')
         fig = plt.figure()
@@ -210,7 +333,7 @@ class ClassificationQuadrature:
                         prior_mean: Union[float, np.ndarray] = 0.,
                         prior_variance: Union[float, np.ndarray] = 100.,
                         smc_budget: int = 100,
-                        naive_bq_budget: int = 200,
+                        naive_bq_budget: int = 100,
                         naive_bq_kern_lengthscale: float = 1.,
                         naive_bq_kern_variance: float = 1.,
                         wsabi_budget: int = 100,
@@ -240,4 +363,15 @@ class ClassificationQuadrature:
             'posterior_eps': posterior_eps
         }
 
-
+    def _wrap_emukit(self, gpy_gp: GPy.core.GP):
+        """
+        Wrap GPy GP around Emukit interface to enable subsequent quadrature
+        :param gpy_gp:
+        :return:
+        """
+        # gpy_gp.optimize()
+        rbf = RBFGPy(gpy_gp.kern)
+        qrbf = QuadratureRBF(rbf, integral_bounds=[(-10.,10.)] * self.dimensions)
+        model = BaseGaussianProcessGPy(kern=qrbf, gpy_model=gpy_gp)
+        method = VanillaBayesianQuadrature(base_gp=model)
+        return method

@@ -1,5 +1,7 @@
 # Eigenvalue Linear Shrinkage Gaussian Process Experiment - Xingchen Wan 2018
 
+import matplotlib
+matplotlib.use("TkAgg")
 import pandas as pd
 import numpy as np
 import GPy
@@ -9,10 +11,10 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 file_path = "data/yacht_hydrodynamics.data.txt"
-MLE_optimisation_restart = 20
+MLE_optimisation_restart = 1
 MLE_optimisation_iteration = 1000
-MCMC_samples = 10
-MCMC_burn_in = 2
+MCMC_samples = 1000
+MCMC_burn_in = 100
 
 
 def load_data(validation_ratio: float=0.3):
@@ -91,7 +93,6 @@ def param_maximum_likelihood(gpy_gp: GPy.models.GPRegression, test_model: bool =
         gpy_gp.kern.lengthscale.set_prior(lengthscale_prior)
     if noise_prior is not None:
         gpy_gp.Gaussian_noise.variance.set_prior(noise_prior)
-        # todo: check this
     gpy_gp.optimize(messages=True, max_iters=MLE_optimisation_iteration)
     gpy_gp.optimize_restarts(num_restarts=MLE_optimisation_restart)
     res = [gpy_gp.rbf.variance, gpy_gp.rbf.lengthscale, gpy_gp.Gaussian_noise.variance]
@@ -157,9 +158,9 @@ def param_hmc(gpy_gp: GPy.models.GPRegression,
         ax = sns.distplot(df.iloc[:, -1], color='r', )
         plt.show()
     samples = t[MCMC_burn_in:, :]
-    gpy_gp.kern.variance[:] = samples[:, -2].mean()
-    gpy_gp.kern.lengthscale[:] = samples[:, :-2].mean()
-    gpy_gp.kern.Gaussian_noise[:] = samples[:, -1].mean()
+    # gpy_gp.kern.variance[:] = samples[:, -2].mean()
+    # gpy_gp.kern.lengthscale[:] = samples[:, :-2].mean()
+    gpy_gp.Gaussian_noise.variance[:] = samples[:, -1].mean()
     res = [gpy_gp.rbf.variance, gpy_gp.rbf.lengthscale, gpy_gp.Gaussian_noise.variance]
     rmse = np.nan
     if test_model:
@@ -169,15 +170,32 @@ def param_hmc(gpy_gp: GPy.models.GPRegression,
 
 
 def param_lin_shrinkage(gpy_gp: GPy.models.GPRegression, test_model: bool = True,
-                        test_X: np.ndarray = None, test_Y: np.ndarray = None
+                        test_X: np.ndarray = None, test_Y: np.ndarray = None,
+                        c: float = 1e-3,
                         ):
     """
     Use linear shrinkage method to estimate the Gaussian noise hyperparameter
+    1. We compute the hessian of the log-marginal likelihood function which is the objective function of GP regression
+    2. Compute the eigenspectrum of the Hessian - from which we can learn the values of $/alpha$ and $/beta$
+    3. Compute the noise from the alpha and beta computed
     :param gpy_gp:
     :param test_model:
     :return:
     """
-    pass
+    train_x = gpy_gp.X
+    K = gpy_gp.kern.K(train_x)
+    eig, _ = np.linalg.eig(K)
+    eig = np.sort(eig[eig >= c])[::-1]
+    eig_max, eig_min = eig[0], eig[-1]
+    alpha = (2 / (np.sqrt(eig_max) + np.sqrt(eig_min))) ** 2
+    beta = ((np.sqrt(eig_max) - np.sqrt(eig_min)) / (np.sqrt(eig_max) + np.sqrt(eig_min))) ** 2
+    gpy_gp.Gaussian_noise.variance[:] = alpha
+    res = [gpy_gp.rbf.variance, gpy_gp.rbf.lengthscale, gpy_gp.Gaussian_noise.variance]
+    rmse = np.nan
+    if test_model:
+        display(gpy_gp)
+        rmse = test_gp(gpy_gp, test_X, test_Y, display_model=True)
+    return gpy_gp, res, rmse
 
 
 def test_gp(gpy_gp: GPy.models.GPRegression,
@@ -195,7 +213,10 @@ def test_gp(gpy_gp: GPy.models.GPRegression,
     mean_pred, var_pred = gpy_gp.predict(Xnew=data_X)
     rmse = np.sqrt(((mean_pred - np.squeeze(data_Y, -1)) ** 2).mean())
     if display_model is True:
+        plt.plot(mean_pred.reshape(-1), marker=".", color="red", label='Prediction')
+        plt.plot(np.squeeze(data_Y), marker=".", color='blue', label='Ground Truth')
         print("Root Mean Squared Error (RMSE): ", str(rmse))
+        plt.show()
     return rmse
 
 
@@ -216,14 +237,15 @@ if __name__ == '__main__':
     # For this case, we use an isotropic zero-mean Gaussian prior with variance of 2 in the *log-space* for the length-
     # scale and variance hyperparameters, and equivalently a Gaussian prior of mean of -6 and variance 2 for the noise
     # hyperparameter in the *log-space*
-    variance_prior = GPy.priors.LogGaussian(mu=0., sigma=2.)
+    variance_prior = GPy.priors.LogGaussian(mu=0., sigma=4.)
 
     lengthscale_prior_mu = np.array([0.]*input_dim)
     lengthscale_prior_var = np.eye(input_dim) * 2.
-    # lengthscale_prior = LogMultivariateGaussian(mu=lengthscale_prior_mu, var=lengthscale_prior_var)
-    lengthscale_prior = None
+    lengthscale_prior = GPy.priors.LogGaussian(mu=0., sigma=4.)
 
-    noise_prior = GPy.priors.LogGaussian(mu=-4, sigma=2)
+    noise_prior = GPy.priors.LogGaussian(mu=0., sigma=4.)
+
+    param_lin_shrinkage(m_mle, test_X=validate_x, test_Y=validate_y)
 
     # Use HMC sampling - we can also infer a posterior distribution of the hyperparameters using Monte Carlo technique
     m_hmc, params_hmc, _ = param_hmc(m_mle, lengthscale_prior=lengthscale_prior,
@@ -239,13 +261,11 @@ if __name__ == '__main__':
                                                     noise_prior=noise_prior,
                                                     test_X=validate_x, test_Y=validate_y)
 
-
-
     # Alternatively, we can manually supply the values of the hyperparameters
     # Here we use the MAP estimates for all hyperparameters apart from the Gaussian noise, and set a fixed value for the
     # Gaussian noise
     params_manual = params_map[:]
     params_manual[-1] = 1e-6  # The last element of the hyperparameter is noise
-    m_manual, _, _ = param_manual(m, manual_params=params_manual)
+    # m_manual, _, _ = param_manual(m, manual_params=params_manual)
 
 

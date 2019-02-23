@@ -56,6 +56,7 @@ def yacht():
     #rq.bq()
     #eval_wsabi_perf(rq)
 
+
 def sotonmet():
     regression_model = PeriodicGPRegression(selected_cols=['Tide height (m)', 'True tide height (m)'],
                                             n_test=15, train_ratio=0.2)
@@ -69,15 +70,23 @@ def sotonmet():
     # rq.wsabi()
     eval_perf(rq, 'bq')
 
+
 def svm():
     from ratio.svm import SVMClassification
     from ratio.classification_quadrature import ClassificationQuadrature
-    svm = SVMClassification()
-    cq = ClassificationQuadrature(svm)
-    cq.maximum_likelihood()
-    # cq.wsabi()
+    svm = SVMClassification(n_train=100, n_test=500)
+    cq = ClassificationQuadrature(svm,  wsabi_budget=200)
+    cq.grid_search()
+    #
+    #cq.maximum_likelihood()
+    #cq.wsabi(verbose=True,)
+
+
+def changepoint():
+    from ratio.changepoint import do_experiment
+    do_experiment()
 
 
 if __name__ == "__main__":
     np.set_printoptions(threshold=1000)
-    svm()
+    changepoint()
