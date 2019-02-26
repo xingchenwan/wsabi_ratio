@@ -6,9 +6,9 @@ import pandas as pd
 import numpy as np
 import GPy
 from IPython.display import display
-from LinShrinkageProject.LogMultivariateGaussian import LogMultivariateGaussian
 import matplotlib.pyplot as plt
 import seaborn as sns
+
 
 file_path = "data/yacht_hydrodynamics.data.txt"
 MLE_optimisation_restart = 1
@@ -171,7 +171,7 @@ def param_hmc(gpy_gp: GPy.models.GPRegression,
 
 def param_lin_shrinkage(gpy_gp: GPy.models.GPRegression, test_model: bool = True,
                         test_X: np.ndarray = None, test_Y: np.ndarray = None,
-                        c: float = 1e-3,
+                        c: float = 1e-7,
                         ):
     """
     Use linear shrinkage method to estimate the Gaussian noise hyperparameter
@@ -184,11 +184,20 @@ def param_lin_shrinkage(gpy_gp: GPy.models.GPRegression, test_model: bool = True
     """
     train_x = gpy_gp.X
     K = gpy_gp.kern.K(train_x)
-    eig, _ = np.linalg.eig(K)
+    eig = np.linalg.eigvals(K).real
     eig = np.sort(eig[eig >= c])[::-1]
-    eig_max, eig_min = eig[0], eig[-1]
-    alpha = (2 / (np.sqrt(eig_max) + np.sqrt(eig_min))) ** 2
-    beta = ((np.sqrt(eig_max) - np.sqrt(eig_min)) / (np.sqrt(eig_max) + np.sqrt(eig_min))) ** 2
+
+    delta_lambda = np.empty(eig.shape[0]-1)
+    for i in range(1, eig.shape[0]):
+        delta_lambda[i-1] = (eig[i] - eig[i-1]) / eig[0]
+    n_outlier = delta_lambda[np.abs(delta_lambda) > c].argmax()
+    print("Number of outliers", n_outlier)
+
+    eig_max = eig[0]
+    eig_b = np.trace(K) / K.shape[0]
+
+    alpha = (2 / (np.sqrt(eig_max) + np.sqrt(eig_b))) ** 2
+    beta = ((np.sqrt(eig_max) - np.sqrt(eig_b)) / (np.sqrt(eig_max) + np.sqrt(eig_b))) ** 2
     gpy_gp.Gaussian_noise.variance[:] = alpha
     res = [gpy_gp.rbf.variance, gpy_gp.rbf.lengthscale, gpy_gp.Gaussian_noise.variance]
     rmse = np.nan

@@ -30,6 +30,7 @@ from emukit.quadrature.loop import VanillaBayesianQuadratureLoop
 from ratio.functions import Functions
 from random import randint
 
+
 class ChangepointModel(Functions):
     def __init__(self,
                  file_path='/Users/xingchenwan/Dropbox/4YP/Codes/wsabi_ratio/data/nile.csv',
@@ -46,8 +47,7 @@ class ChangepointModel(Functions):
         self.method = method
 
     def init_gp_model(self):
-        from ratio.changepoint_kernel import ChangepointRBF
-        ker = GPy.kern.ChangepointRBF(input_dim=1, lengthscale1=1., lengthscale2=1., variance1=1., variance2=2., xc=10)
+        ker = GPy.kern.ChangepointRBF(input_dim=1, lengthscale1=1., lengthscale2=2., variance1=1., variance2=2., xc=0)
         x_init = self.X[:self.window_size].reshape(1, -1)
         y_init = self.Y[:self.window_size].reshape(1, -1)
         m = GPy.models.GPRegression(x_init, y_init, ker)
@@ -119,18 +119,20 @@ class ChangepointModel(Functions):
 
 
 def wsabi(X_pred, y_grd, log_lik_handle, param_dim=4, budget=10,
-          prior_mean=np.zeros((4, 1)), prior_var=100*np.eye(4)):
+          prior_mean=np.zeros((4, 1)), prior_var=50*np.eye(4)):
         # Allocating number of maximum evaluations
         start = time.time()
         batch_count = 1
         prior = Gaussian(mean=prior_mean.reshape(-1),covariance=prior_var)
-        discrete_params = np.array([randint(0, 10) for _ in range(25)]) # Gen 12 random integers in range of 25
+        # discrete_params = np.array([randint(0, 10) for _ in range(25)]) # Gen 12 random integers in range of 25
+        discrete_params = np.array([_ for _ in range(25)])
+        n_discrete_params = len(discrete_params)
 
         # Allocate memory of the samples and results
-        log_phi = np.zeros((budget*batch_count, param_dim,))  # The log-hyperparameter sampling points
-        log_r = np.zeros((budget*batch_count, ))  # The log-likelihood function
-        q = np.zeros((budget*batch_count,)) # Prediction
-        var = np.zeros((budget*batch_count))  # Posterior variance
+        log_phi = np.zeros((budget*batch_count*n_discrete_params, param_dim,))  # The log-hyperparameter sampling points
+        log_r = np.zeros((budget*batch_count*n_discrete_params, ))  # The log-likelihood function
+        q = np.zeros((budget*batch_count*n_discrete_params,)) # Prediction
+        var = np.zeros((budget*batch_count*n_discrete_params))  # Posterior variance
 
         log_phi_initial = np.array([1., 1., 1., 1.]).reshape(1, -1)
         r_initial = np.sqrt(2 * np.exp(log_lik_handle(
@@ -143,27 +145,26 @@ def wsabi(X_pred, y_grd, log_lik_handle, param_dim=4, budget=10,
                             variance=1.,
                             lengthscale=1.)
         # kern.plot(ax=plt.gca())
-        log_r_gp = GPy.models.GPRegression(log_phi_initial, r_initial.reshape(1, -1), kern)
-        log_r_model = WarpedIntegrandModel(WsabiLGP(log_r_gp), prior)
+        r_gp = GPy.models.GPRegression(log_phi_initial, r_initial.reshape(1, -1), kern)
+        r_model = WarpedIntegrandModel(WsabiLGP(r_gp), prior)
 
         # Firstly, within the given allowance, compute an estimate of the model evidence. Model evidence is the common
         # denominator for all predictive distributions.
 
-        #todo something wrong here
-        for i_a in range(budget):
-            for i_c in range(len(discrete_params)):
-                log_phi_i = np.array(select_batch(log_r_model, batch_count, "Kriging Believer")).reshape(batch_count, -1)
+        for i_c in range(n_discrete_params):
+            for i_a in range(budget):
+                log_phi_i = np.array(select_batch(r_model, batch_count, "Kriging Believer")).reshape(batch_count, -1)
                 phi_i = np.exp(log_phi_i)
                 phi_i = np.concatenate([phi_i, discrete_params[i_c].reshape(1, 1)], axis=1)
                 print(phi_i)
                 try:
-                    log_r_i, q[i_a*i_c], var[i_a, i_c] = log_lik_handle(phi=phi_i, x_pred=X_pred)
+                    log_r_i, q[i_a*budget+i_c], var[i_a*budget+i_c] = log_lik_handle(phi=phi_i, x_pred=X_pred)
                 except:
                     print('Error occurred. Ignored this iteration.')
                     continue
-                log_r[i_a, i_c] = log_r_i
-                log_phi[i_a, i_c, :] = log_phi_i
-                log_r_model.update(log_phi_i, np.exp(log_r_i).reshape(1, -1))
+                log_r[i_a*budget+i_c] = log_r_i
+                log_phi[i_a*budget+i_c, :] = log_phi_i
+                r_model.update(log_phi_i, np.exp(log_r_i).reshape(1, -1))
 
         max_log_r = max(log_r)
         r = np.exp(log_r - max_log_r)
@@ -178,6 +179,7 @@ def wsabi(X_pred, y_grd, log_lik_handle, param_dim=4, budget=10,
         print("Model log-evidence ", log_r_int)
 
         # Enforce positivity in q
+        print(q)
         q_min = np.min(q)
         if q_min < 0:
             q -= q_min
@@ -196,7 +198,7 @@ def wsabi(X_pred, y_grd, log_lik_handle, param_dim=4, budget=10,
         # Now estimate the posterior
         # rq_int = rq_model.integral_mean()[0] + q_min * r_int
         rq_int = np.exp(np.log(rq_model.integral_mean()[0]) + max_log_rq) + q_min * r_int
-
+        print("rq_int", rq_int)
         # Similar for variance
         log_rvar_x = log_r + np.log(var)
         max_log_rvar = np.max(log_rvar_x)
