@@ -41,4 +41,4 @@ class Gaussian1D(Prior):
         return jacobian, hessian
 
     def __call__(self, x: Union[np.ndarray, list]) -> np.ndarray:
-        return np.array([norm.pdf(np.asscalar(each_x), loc=self.mean, scale=self.variance) for each_x in x])
+        return np.array([norm._pdf_point_est(np.asscalar(each_x), loc=self.mean, scale=self.variance) for each_x in x])

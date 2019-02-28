@@ -41,7 +41,7 @@ class GammaPrior(AlphaPrior):
         :param alpha: the ratio of infection rate and recovery rate
         :return: the probability density at alpha
         """
-        return self.gamma.pdf(alpha)
+        return self.gamma._pdf_point_est(alpha)
 
 
 class UniformPrior(AlphaPrior):

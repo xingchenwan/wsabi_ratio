@@ -1,4 +1,4 @@
-# Eigenvalue Linear Shrinkage Gaussian Process Experiment - Xingchen Wan 2018
+# Eigenvalue Linear Shrinkage Gaussian Process Experiment - Xingchen Wan 2018 - 2019
 
 import matplotlib
 matplotlib.use("TkAgg")
@@ -8,23 +8,24 @@ import GPy
 from IPython.display import display
 import matplotlib.pyplot as plt
 import seaborn as sns
+import time
 
-
-file_path = "data/yacht_hydrodynamics.data.txt"
+hydrodynamics_path = "data/yacht_hydrodynamics.data.txt"
+boston_path = "data/BostonHousing.csv"
 MLE_optimisation_restart = 1
 MLE_optimisation_iteration = 1000
 MCMC_samples = 1000
 MCMC_burn_in = 100
 
 
-def load_data(validation_ratio: float=0.3):
+def load_data_hydrodynamics(validation_ratio: float=0.5):
     """
     Load data-set, do relevant processing and split the data into training and validation sets
     :param validation_ratio: the fraction of data that will be reserved as validation sets
     :return: the data (X) and labels(Y) of the training and validation data
     """
     assert validation_ratio < 1.
-    raw_data = pd.read_csv(filepath_or_buffer=file_path, header=None, sep='\s+')
+    raw_data = pd.read_csv(filepath_or_buffer=hydrodynamics_path, header=None, sep='\s+')
     data_X = raw_data.iloc[:, :-1].values
     data_Y = raw_data.iloc[:, -1].values
     if data_Y.ndim == 1:
@@ -33,6 +34,19 @@ def load_data(validation_ratio: float=0.3):
         data_X = np.array([data_X])
     assert data_X.shape[0] == data_Y.shape[0]
 
+    train_data_length = int(data_X.shape[0] * (1. - validation_ratio))
+    train_data_X = data_X[:train_data_length, :]
+    validation_data_X = data_X[train_data_length:, :]
+    train_data_Y = data_Y[:train_data_length, :]
+    validation_data_Y = data_Y[train_data_length:, :]
+    return train_data_X, train_data_Y, validation_data_X, validation_data_Y
+
+
+def load_data_boston(validation_ratio: float=0.5):
+    assert validation_ratio < 1.
+    raw_data = pd.read_csv(filepath_or_buffer=boston_path)
+    data_X = raw_data.iloc[:, :-1].values
+    data_Y = raw_data.iloc[:, -1].values.reshape(-1, 1)
     train_data_length = int(data_X.shape[0] * (1. - validation_ratio))
     train_data_X = data_X[:train_data_length, :]
     validation_data_X = data_X[train_data_length:, :]
@@ -67,7 +81,8 @@ def param_maximum_likelihood(gpy_gp: GPy.models.GPRegression, test_model: bool =
                              test_X: np.ndarray = None, test_Y: np.ndarray = None,
                              variance_prior: GPy.priors.Prior = None,
                              lengthscale_prior: GPy.priors.Prior = None,
-                             noise_prior: GPy.priors.Prior = None,):
+                             noise_prior: GPy.priors.Prior = None,
+                             fix_noise_params: bool = True):
     """
     Find the maximum likelihood estimates of the hyperparameters. The last element in the vector returned is the
     Gaussian noise hyperparameter that we are interested in.
@@ -93,11 +108,22 @@ def param_maximum_likelihood(gpy_gp: GPy.models.GPRegression, test_model: bool =
         gpy_gp.kern.lengthscale.set_prior(lengthscale_prior)
     if noise_prior is not None:
         gpy_gp.Gaussian_noise.variance.set_prior(noise_prior)
+
+    if fix_noise_params is True:
+        gpy_gp.Gaussian_noise.variance.fix()
+
+    start = time.time()
     gpy_gp.optimize(messages=True, max_iters=MLE_optimisation_iteration)
     gpy_gp.optimize_restarts(num_restarts=MLE_optimisation_restart)
     res = [gpy_gp.rbf.variance, gpy_gp.rbf.lengthscale, gpy_gp.Gaussian_noise.variance]
+    end = time.time()
     rmse = np.nan
     if test_model:
+        if noise_prior is not None: model = 'MAP'
+        else: model = 'MLE'
+        print("----------------- Testing "+model+" -------------------")
+        print("Fix noise hyperparameter ?", fix_noise_params)
+        print("Clock time: ", end-start)
         display(gpy_gp)
         rmse = test_gp(gpy_gp, test_X, test_Y, display_model=True)
     return gpy_gp, res, rmse
@@ -151,6 +177,8 @@ def param_hmc(gpy_gp: GPy.models.GPRegression,
     if noise_prior is not None:
         gpy_gp.Gaussian_noise.variance.set_prior(noise_prior)
     display(gpy_gp)
+
+    start = time.time()
     hmc = GPy.inference.mcmc.HMC(gpy_gp, stepsize=5e-2)
     t = hmc.sample(num_samples=MCMC_samples)
     if plot_distributions:
@@ -162,30 +190,35 @@ def param_hmc(gpy_gp: GPy.models.GPRegression,
     # gpy_gp.kern.lengthscale[:] = samples[:, :-2].mean()
     gpy_gp.Gaussian_noise.variance[:] = samples[:, -1].mean()
     res = [gpy_gp.rbf.variance, gpy_gp.rbf.lengthscale, gpy_gp.Gaussian_noise.variance]
+    end = time.time()
+
     rmse = np.nan
     if test_model:
+        print("----------------- Testing HMC -------------------")
         display(gpy_gp)
+        print("Clock time: ", end-start)
         rmse = test_gp(gpy_gp, test_X, test_Y, display_model=True)
     return gpy_gp, res, rmse
 
 
 def param_lin_shrinkage(gpy_gp: GPy.models.GPRegression, test_model: bool = True,
                         test_X: np.ndarray = None, test_Y: np.ndarray = None,
-                        c: float = 1e-7,
+                        c: float = 1e-6,
                         ):
     """
     Use linear shrinkage method to estimate the Gaussian noise hyperparameter
-    1. We compute the hessian of the log-marginal likelihood function which is the objective function of GP regression
-    2. Compute the eigenspectrum of the Hessian - from which we can learn the values of $/alpha$ and $/beta$
-    3. Compute the noise from the alpha and beta computed
+    1. We compute the eigenvalue-eigenvector decomposition of the K matrix
+    2. Compute the number of outliers in the eigenspectrum
+    3. Estimate the bulk mean of the eigenvalues - this will be used as the noise variance
     :param gpy_gp:
     :param test_model:
     :return:
     """
+    start = time.time()
     train_x = gpy_gp.X
     K = gpy_gp.kern.K(train_x)
     eig = np.linalg.eigvals(K).real
-    eig = np.sort(eig[eig >= c])[::-1]
+    eig = np.sort(eig)[::-1]
 
     delta_lambda = np.empty(eig.shape[0]-1)
     for i in range(1, eig.shape[0]):
@@ -193,16 +226,20 @@ def param_lin_shrinkage(gpy_gp: GPy.models.GPRegression, test_model: bool = True
     n_outlier = delta_lambda[np.abs(delta_lambda) > c].argmax()
     print("Number of outliers", n_outlier)
 
-    eig_max = eig[0]
-    eig_b = np.trace(K) / K.shape[0]
+    #plt.plot(eig[15:], marker='.')
+    #plt.show()
+    eig_bulk = eig[n_outlier:]
+    eig_b = np.sum(eig_bulk) / eig_bulk.shape[0]
 
-    alpha = (2 / (np.sqrt(eig_max) + np.sqrt(eig_b))) ** 2
-    beta = ((np.sqrt(eig_max) - np.sqrt(eig_b)) / (np.sqrt(eig_max) + np.sqrt(eig_b))) ** 2
-    gpy_gp.Gaussian_noise.variance[:] = alpha
+    gpy_gp.Gaussian_noise.variance[:] = eig_b
     res = [gpy_gp.rbf.variance, gpy_gp.rbf.lengthscale, gpy_gp.Gaussian_noise.variance]
+    end = time.time()
+
     rmse = np.nan
     if test_model:
+        print("----------------- Testing Linear Shrinkage -------------------")
         display(gpy_gp)
+        print("Clock time: ", end-start)
         rmse = test_gp(gpy_gp, test_X, test_Y, display_model=True)
     return gpy_gp, res, rmse
 
@@ -231,7 +268,8 @@ def test_gp(gpy_gp: GPy.models.GPRegression,
 
 if __name__ == '__main__':
     # Load the training and validation set data
-    train_x, train_y, validate_x, validate_y = load_data()
+    train_x, train_y, validate_x, validate_y = load_data_hydrodynamics()
+    # train_x, train_y, validate_x, validate_y = load_data_boston()
 
     # Initialise a GP object on the training data
     m = fit_gp(train_x, train_y)
@@ -239,42 +277,34 @@ if __name__ == '__main__':
     # Save the input dimensions
     input_dim = m.input_dim
 
-    # Do a MLE-II estimate of the hyperparameters.
-    m_mle, params_mle, _ = param_maximum_likelihood(m, test_X=validate_x, test_Y=validate_y)
+    # Do a MLE estimate of the hyperparameters.
+    _, params_mle, _ = param_maximum_likelihood(m, test_X=validate_x, test_Y=validate_y, fix_noise_params=False)
 
-    # Do a MAP-II estimate of the hyperparameters. Here we can specify a prior over $\theta$, the hyperparameter vector
+    # Do a MAP estimate of the hyperparameters. Here we can specify a prior over $\theta$, the hyperparameter vector
     # For this case, we use an isotropic zero-mean Gaussian prior with variance of 2 in the *log-space* for the length-
     # scale and variance hyperparameters, and equivalently a Gaussian prior of mean of -6 and variance 2 for the noise
     # hyperparameter in the *log-space*
     variance_prior = GPy.priors.LogGaussian(mu=0., sigma=4.)
-
     lengthscale_prior_mu = np.array([0.]*input_dim)
     lengthscale_prior_var = np.eye(input_dim) * 2.
     lengthscale_prior = GPy.priors.LogGaussian(mu=0., sigma=4.)
-
     noise_prior = GPy.priors.LogGaussian(mu=0., sigma=4.)
 
-    param_lin_shrinkage(m_mle, test_X=validate_x, test_Y=validate_y)
+    _, _, _ = param_maximum_likelihood(m, test_X=validate_x, test_Y=validate_y, variance_prior=variance_prior,
+                             lengthscale_prior=lengthscale_prior, noise_prior=noise_prior, fix_noise_params=False)
+
+    # Now we fix the noise hyperparameter, and optimize over the other hyperparameters only...
+    m_map, _, _ = param_maximum_likelihood(m, test_X=validate_x, test_Y=validate_y, variance_prior=variance_prior,
+                                       lengthscale_prior=lengthscale_prior, noise_prior=noise_prior,
+                                       fix_noise_params=True)
+
+    # The linear shrinkage estimator
+    param_lin_shrinkage(m_map, test_X=validate_x, test_Y=validate_y)
 
     # Use HMC sampling - we can also infer a posterior distribution of the hyperparameters using Monte Carlo technique
-    m_hmc, params_hmc, _ = param_hmc(m_mle, lengthscale_prior=lengthscale_prior,
-                                     variance_prior=variance_prior,
-                                     noise_prior=noise_prior,
-                                     test_X=validate_x, test_Y=validate_y,
-                                     plot_distributions=True)
-
-
-    m_map, params_map, _ = param_maximum_likelihood(m,
-                                                    lengthscale_prior=lengthscale_prior,
-                                                    variance_prior=variance_prior,
-                                                    noise_prior=noise_prior,
-                                                    test_X=validate_x, test_Y=validate_y)
-
-    # Alternatively, we can manually supply the values of the hyperparameters
-    # Here we use the MAP estimates for all hyperparameters apart from the Gaussian noise, and set a fixed value for the
-    # Gaussian noise
-    params_manual = params_map[:]
-    params_manual[-1] = 1e-6  # The last element of the hyperparameter is noise
-    # m_manual, _, _ = param_manual(m, manual_params=params_manual)
-
+    _, params_hmc, _ = param_hmc(m_map, lengthscale_prior=lengthscale_prior,
+                                 variance_prior=variance_prior,
+                                 noise_prior=noise_prior,
+                                 test_X=validate_x, test_Y=validate_y,
+                                 plot_distributions=True)
 

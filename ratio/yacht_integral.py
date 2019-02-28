@@ -32,7 +32,7 @@ def integral_mean_rebased(gpy_gp, prior_mean, prior_var, compute_var=False):
     n_s = np.zeros((n, ))
 
     for i in range(n):
-        n_s[i] = h * multivariate_normal.pdf(X[i, :], mean=mu, cov=W+V)
+        n_s[i] = h * multivariate_normal._pdf_point_est(X[i, :], mean=mu, cov=W + V)
     # print(Y)
     c_f = np.linalg.det(2 * np.pi * (2 * W + V)) ** -0.5
 
@@ -80,7 +80,7 @@ def integral_mean_without_rebase(gpy_gp, prior_mean, prior_var, compute_var=Fals
     n_s = np.zeros((n,))
 
     for i in range(n):
-        n_s[i] = h * multivariate_normal.pdf(X[i, :], mean=mu, cov=W + V)
+        n_s[i] = h * multivariate_normal._pdf_point_est(X[i, :], mean=mu, cov=W + V)
     # print(Y)
     c_f = np.linalg.det(2 * np.pi * (2 * W + V)) ** -0.5
 

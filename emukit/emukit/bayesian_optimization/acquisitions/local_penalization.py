@@ -85,7 +85,7 @@ class LocalPenalization(Acquisition):
         normalized_distance = (distances - self.radius) / self.scale
         h_func = norm.cdf(normalized_distance)
         d_value_dx = 0.5 * (1 / h_func[:, :, None]) \
-                     * norm.pdf(normalized_distance)[:, :, None] \
+                     * norm._pdf_point_est(normalized_distance)[:, :, None] \
                      * d_dist_dx / self.scale[None, :, None]
         return norm.logcdf(normalized_distance).sum(1, keepdims=True), d_value_dx.sum(1)
 

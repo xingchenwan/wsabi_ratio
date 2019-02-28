@@ -68,13 +68,15 @@ class ChangepointModel(Functions):
                 Y[i] = 1 + 0.02 * np.sin(X[i])
             else:
                 Y[i] = 4 + 1 * np.sin(X[i])
+        plt.plot(X, Y)
+        plt.show()
         return X, Y, 80
 
     def online_pred(self, start_idx):
         # Do one-step-forward prediction based on the data x and y. along with the sufficient statistics of the
         # posterior distribution of parameter x_c (i.e. the run length)
         if start_idx < self.window_size:
-            logging.info("Insuffient run length. Skipped")
+            logging.info("Insuffcient run length. Skipped")
             return np.nan, np.nan, np.nan
         elif start_idx < self.n - self.window_size-1:
             x_new = self.X[start_idx: start_idx+self.window_size]
@@ -94,7 +96,7 @@ class ChangepointModel(Functions):
         """
         Do prediction given x and y data
         :param x: Input data
-        :param y: Input label (target)
+        :param y: Input label (target)n
         :param method: marginalisation technique. mc=monte carlo, bmc=bayesian (grid) monte carlo, wsabi=wsabi quadrature
         :return: Tuple[prediction of next time step, run length mean, run length var]
         """
@@ -119,7 +121,7 @@ class ChangepointModel(Functions):
 
 
 def wsabi(X_pred, y_grd, log_lik_handle, param_dim=4, budget=10,
-          prior_mean=np.zeros((4, 1)), prior_var=50*np.eye(4)):
+          prior_mean=np.zeros((4, 1)), prior_var=10*np.eye(4)):
         # Allocating number of maximum evaluations
         start = time.time()
         batch_count = 1
@@ -156,13 +158,16 @@ def wsabi(X_pred, y_grd, log_lik_handle, param_dim=4, budget=10,
                 log_phi_i = np.array(select_batch(r_model, batch_count, "Kriging Believer")).reshape(batch_count, -1)
                 phi_i = np.exp(log_phi_i)
                 phi_i = np.concatenate([phi_i, discrete_params[i_c].reshape(1, 1)], axis=1)
-                print(phi_i)
                 try:
                     log_r_i, q[i_a*budget+i_c], var[i_a*budget+i_c] = log_lik_handle(phi=phi_i, x_pred=X_pred)
                 except:
                     print('Error occurred. Ignored this iteration.')
+
                     continue
+                print(phi_i, log_r_i)
+
                 log_r[i_a*budget+i_c] = log_r_i
+
                 log_phi[i_a*budget+i_c, :] = log_phi_i
                 r_model.update(log_phi_i, np.exp(log_r_i).reshape(1, -1))
 

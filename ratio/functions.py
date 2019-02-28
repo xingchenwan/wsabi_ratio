@@ -184,7 +184,7 @@ class Rosenbrock2D(Functions):
         pos = np.empty(xv.shape + (2, ))
         pos[:, :, 0] = xv
         pos[:, :, 1] = yv
-        z1 = multivariate_normal(gauss_mu, gauss_sigma).pdf(pos)
+        z1 = multivariate_normal(gauss_mu, gauss_sigma)._pdf_point_est(pos)
 
         # Plotting stuff
         levels = np.arange(0, 1, 0.05)
@@ -628,12 +628,12 @@ class GaussMixture(Functions):
     @staticmethod
     def one_d_normal(x: np.ndarray, mean, var) -> np.ndarray:
         assert x.ndim == 1
-        return np.array([norm.pdf(x[i], mean, var) for i in range(x.shape[0])])
+        return np.array([norm._pdf_point_est(x[i], mean, var) for i in range(x.shape[0])])
 
     @staticmethod
     def multi_d_gauss(x: np.ndarray, mean, cov) -> np.ndarray:
         assert x.ndim == 2
-        return np.array([multivariate_normal.pdf(x[i], mean=mean, cov=cov) for i in range(x.shape[0])])
+        return np.array([multivariate_normal._pdf_point_est(x[i], mean=mean, cov=cov) for i in range(x.shape[0])])
 
     def add_gaussian(self, means: Union[np.ndarray, float], var: Union[np.ndarray, float], weight: Union[np.ndarray, float]):
         assert means.shape == self.means.shape[1:]

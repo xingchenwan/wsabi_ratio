@@ -328,7 +328,7 @@ class OriginalIntegrandModel(IntegrandModel):
             W = float(sigma) + w ** 2
             mu = np.asscalar(mu)
             for i in range(n):
-                n_s[i] = h * norm.pdf(X_D[i, :], loc=mu, scale=np.sqrt(W))
+                n_s[i] = h * norm._pdf_point_est(X_D[i, :], loc=mu, scale=np.sqrt(W))
         else:
             if len(w) > 1:
                 assert len(w) == d
@@ -337,7 +337,7 @@ class OriginalIntegrandModel(IntegrandModel):
                 w = np.diag(np.array([w]*d))
             W = sigma + w
             for i in range(n):
-                n_s[i] = h * multivariate_normal.pdf(X_D[i, :], mean=mu, cov=W)
+                n_s[i] = h * multivariate_normal._pdf_point_est(X_D[i, :], mean=mu, cov=W)
         K_xx = kernel.K(X_D)
         # Find the inverse of K_xx matrix via Cholesky decomposition (with jitter)
 
