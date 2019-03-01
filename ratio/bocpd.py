@@ -103,68 +103,6 @@ class StudentT(Model):
         self.beta = self.beta[:t + 1]
 
 
-class GaussianProcess(Model):
-    """ GP predictive posterior"""
-    def __init__(self, window_len=25,
-                 init_log_parameters=np.array([1., 1., 1e-3]),
-                 mode='MLE'):
-        super(GaussianProcess, self).__init__()
-        self.X = None
-        self.Y = None
-        self.model = None
-        self.init_log_parameters = init_log_parameters
-        self.window_len = window_len
-        self.mode = mode
-
-    def pdf(self, data):
-        if self.mode == 'MLE':
-            prob = self._pdf_point_est(data)
-        elif self.mode == 'WSABI':
-            raise NotImplementedError
-        else:
-            raise ValueError("Unrecognised Keyword!")
-        return prob
-
-    def _pdf_point_est(self, data):
-        if self.model is None:
-            return .5 # The model is not initialised, and we cannot do prediction here
-        # Do a prediction here from the GP
-        self.model.optimize()
-        X_pred = np.array(self.X[-1, :] + 1)
-        print(X_pred)
-        pred_mean, pred_var = self.model.predict(Xnew=X_pred.reshape(1, 1))
-        prob = scipy.stats.norm.pdf(data, loc=pred_mean, scale=np.sqrt(pred_var))
-        return prob
-
-    def _pdf_wsabi(self, data):
-        pass
-
-    def _init_gp(self, data: np.ndarray):
-        init_Y = data.reshape(-1, 1)
-        init_X = np.array([_ for _ in range(init_Y.shape[0])]).reshape(-1, 1)
-        init_kern = GPy.kern.RBF(input_dim=1,
-                                 lengthscale=np.exp(self.init_log_parameters[0]),
-                                 variance=np.exp(self.init_log_parameters[1]))
-        self.model = GPy.models.GPRegression(init_X, init_Y, kernel=init_kern)
-        self.model.Gaussian_noise.variance = np.exp(self.init_log_parameters[2])
-        self.X = init_X
-        self.Y = init_Y
-
-    def update(self, data: np.ndarray):
-        if self.model is None:
-            self._init_gp(data)
-        else:
-            self.Y = np.concatenate([self.Y, data.reshape(1, 1)], axis=0)
-            # Concatenate the new data unto the observation array
-            self.X = np.concatenate([self.X, np.array(self.X[-1]+1).reshape(1, 1)], axis=0)
-            # Concatenate the index array
-            if self.X.shape[0] > self.window_len: # Concatenate the array
-                self.X = self.X[-self.window_len:, :]
-                self.Y = self.Y[-self.window_len:, :]
-            self.model.set_XY(self.X, self.Y)
-            #self.model.plot()
-            #plt.show()
-
 
 def demo():
 
@@ -181,8 +119,8 @@ def demo():
         return data
 
     data = generate_normal_time_series(4, 50, 52)
-    # R, maxes = BOCD(data, partial(constant_hazard, 250), StudentT(0.1, .01, 1, 0))
-    R, maxes = BOCD(data, partial(constant_hazard, 250), GaussianProcess())
+    R, maxes = BOCD(data, partial(constant_hazard, 250), StudentT(0.1, .01, 1, 0))
+    # R, maxes = BOCD(data, partial(constant_hazard, 250), GaussianProcess())
 
     fig, ax = plt.subplots(figsize=[18, 16])
     ax = fig.add_subplot(3, 1, 1)

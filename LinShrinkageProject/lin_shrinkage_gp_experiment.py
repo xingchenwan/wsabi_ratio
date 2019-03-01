@@ -9,13 +9,16 @@ from IPython.display import display
 import matplotlib.pyplot as plt
 import seaborn as sns
 import time
+from scipy.stats import norm
+from sklearn.metrics import mean_squared_error
 
 hydrodynamics_path = "data/yacht_hydrodynamics.data.txt"
 boston_path = "data/BostonHousing.csv"
 MLE_optimisation_restart = 1
-MLE_optimisation_iteration = 1000
+MLE_optimisation_iteration = 2000
 MCMC_samples = 1000
 MCMC_burn_in = 100
+np_rdm_seed = 1
 
 
 def load_data_hydrodynamics(validation_ratio: float=0.5):
@@ -25,9 +28,10 @@ def load_data_hydrodynamics(validation_ratio: float=0.5):
     :return: the data (X) and labels(Y) of the training and validation data
     """
     assert validation_ratio < 1.
-    raw_data = pd.read_csv(filepath_or_buffer=hydrodynamics_path, header=None, sep='\s+')
-    data_X = raw_data.iloc[:, :-1].values
-    data_Y = raw_data.iloc[:, -1].values
+    raw_data = pd.read_csv(filepath_or_buffer=hydrodynamics_path, header=None, sep='\s+').values
+    np.random.shuffle(raw_data)
+    data_X = raw_data[:, :-1]
+    data_Y = raw_data[:, -1]
     if data_Y.ndim == 1:
         data_Y = data_Y.reshape(-1, 1)
     if data_X.ndim == 1:
@@ -44,9 +48,10 @@ def load_data_hydrodynamics(validation_ratio: float=0.5):
 
 def load_data_boston(validation_ratio: float=0.5):
     assert validation_ratio < 1.
-    raw_data = pd.read_csv(filepath_or_buffer=boston_path)
-    data_X = raw_data.iloc[:, :-1].values
-    data_Y = raw_data.iloc[:, -1].values.reshape(-1, 1)
+    raw_data = pd.read_csv(filepath_or_buffer=boston_path).values
+    np.random.shuffle(raw_data)
+    data_X = raw_data[:, :-1]
+    data_Y = raw_data[:, -1].reshape(-1, 1)
     train_data_length = int(data_X.shape[0] * (1. - validation_ratio))
     train_data_X = data_X[:train_data_length, :]
     validation_data_X = data_X[train_data_length:, :]
@@ -125,7 +130,7 @@ def param_maximum_likelihood(gpy_gp: GPy.models.GPRegression, test_model: bool =
         print("Fix noise hyperparameter ?", fix_noise_params)
         print("Clock time: ", end-start)
         display(gpy_gp)
-        rmse = test_gp(gpy_gp, test_X, test_Y, display_model=True)
+        rmse = test_gp(gpy_gp, test_X, test_Y,)
     return gpy_gp, res, rmse
 
 
@@ -148,7 +153,7 @@ def param_manual(gpy_gp: GPy.models.GPRegression,
     rmse = np.nan
     if test_model:
         display(gpy_gp)
-        rmse = test_gp(gpy_gp, test_X, test_Y, display_model=True)
+        rmse = test_gp(gpy_gp, test_X, test_Y)
     return gpy_gp, manual_params, rmse
 
 
@@ -197,13 +202,13 @@ def param_hmc(gpy_gp: GPy.models.GPRegression,
         print("----------------- Testing HMC -------------------")
         display(gpy_gp)
         print("Clock time: ", end-start)
-        rmse = test_gp(gpy_gp, test_X, test_Y, display_model=True)
+        rmse = test_gp(gpy_gp, test_X, test_Y,)
     return gpy_gp, res, rmse
 
 
 def param_lin_shrinkage(gpy_gp: GPy.models.GPRegression, test_model: bool = True,
                         test_X: np.ndarray = None, test_Y: np.ndarray = None,
-                        c: float = 1e-6,
+                        c: float = 1e-3,
                         ):
     """
     Use linear shrinkage method to estimate the Gaussian noise hyperparameter
@@ -240,12 +245,12 @@ def param_lin_shrinkage(gpy_gp: GPy.models.GPRegression, test_model: bool = True
         print("----------------- Testing Linear Shrinkage -------------------")
         display(gpy_gp)
         print("Clock time: ", end-start)
-        rmse = test_gp(gpy_gp, test_X, test_Y, display_model=True)
+        rmse = test_gp(gpy_gp, test_X, test_Y,)
     return gpy_gp, res, rmse
 
 
 def test_gp(gpy_gp: GPy.models.GPRegression,
-            data_X: np.ndarray, data_Y: np.ndarray, display_model: bool = False) -> float:
+            data_X: np.ndarray, data_Y: np.ndarray, display_model: bool = True) -> float:
     """
     Evaluate the goodness of the model fit by RMSE value
     :param gpy_gp: the GPy regression model
@@ -256,20 +261,27 @@ def test_gp(gpy_gp: GPy.models.GPRegression,
     """
     assert data_X.shape[0] == data_Y.shape[0], "Lengths of x and labels mismatch"
     assert data_X.shape[1] == gpy_gp.input_dim, "Dimension of x and the model dimensions mismatch"
+    data_Y = np.squeeze(data_Y, -1)
     mean_pred, var_pred = gpy_gp.predict(Xnew=data_X)
-    rmse = np.sqrt(((mean_pred - np.squeeze(data_Y, -1)) ** 2).mean())
+    n_test = mean_pred.shape[0]
+    rmse = np.sqrt(mean_squared_error(data_Y, mean_pred))
+    ll = 0.
+    for i in range(n_test):
+        ll += norm.logpdf(data_Y[i], loc=mean_pred[i], scale=np.sqrt(var_pred[i]))
+    print("Root Mean Squared Error (RMSE): ", str(rmse))
+    print("Log-likelihood (LL): ",str(ll))
     if display_model is True:
         plt.plot(mean_pred.reshape(-1), marker=".", color="red", label='Prediction')
         plt.plot(np.squeeze(data_Y), marker=".", color='blue', label='Ground Truth')
-        print("Root Mean Squared Error (RMSE): ", str(rmse))
+        plt.legend()
         plt.show()
     return rmse
 
 
 if __name__ == '__main__':
     # Load the training and validation set data
-    train_x, train_y, validate_x, validate_y = load_data_hydrodynamics()
-    # train_x, train_y, validate_x, validate_y = load_data_boston()
+    # train_x, train_y, validate_x, validate_y = load_data_hydrodynamics()
+    train_x, train_y, validate_x, validate_y = load_data_boston()
 
     # Initialise a GP object on the training data
     m = fit_gp(train_x, train_y)

@@ -83,7 +83,8 @@ def svm():
 
 
 def changepoint():
-    from ratio.bocpd import demo
+    from ratio.changepoint import do_experiment
+    from ratio.bocpd_gp import demo
     demo()
 
 
