@@ -12,12 +12,12 @@ Main Contents
 * **Experiment on real data:** 
 * GP Regression: Hydrodynamics dataset [2], Sotonmet [data](http://www.robots.ox.ac.uk/~mosb/teaching/AIMS_CDT/sotonmet.txt) 
 * SVM Classification: Wisconsin Breast Cancer [data](https://archive.ics.uci.edu/ml/machine-learning-databases/breast-cancer-wisconsin/)
+* (New) Bayesian Changepoint Detection (BOCPD-GP): Nile dataset, Dow Jones Daily Log-return
 * **Methods**: MLE/MAP, Grid Search (For SVM) Markov-chain Monte Carlo, Vanilla Bayesian Quadrature, Fast Warped Bayesian Quadrature
 
 The codes have been written and tested under Anaconda Python 3.6. Other dependent packages include:
 * GPy
 * GPyOpt
-* PyMC3 (currently no dependency on this module, but might use this in the future)
 * Amazon Emukit
 
 Also used WSABI implementations written by Ed Wagstaff [3]
