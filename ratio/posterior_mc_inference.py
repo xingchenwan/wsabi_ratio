@@ -20,7 +20,7 @@ class PosteriorMCSampler:
             samples = self._hmc_gpflow(num_iters, num_chains)
         else:
             raise ValueError("Unknown mode keyword", mode)
-        self.save_as_csv(samples)
+        # self.save_as_csv(samples)
         return samples
 
     def _hmc_gpy(self, num_iters, num_chains):
@@ -38,7 +38,7 @@ class PosteriorMCSampler:
         self.gpflow_gp.clear()
         # Assign prior - up to this point the project uses LogGaussian prior (0, 2) for all hyperparameters, so I will
         # leave this hard-coded for now todo: change the hard-coding!
-        self.gpflow_gp.kern.period.prior = gpflow.priors.LogNormal(0, 1000)
+        # self.gpflow_gp.kern.period.prior = gpflow.priors.LogNormal(0, 1000)
         self.gpflow_gp.kern.lengthscales.prior = gpflow.priors.LogNormal(0, 1000)
         self.gpflow_gp.kern.variance.prior = gpflow.priors.LogNormal(0, 1000)
         self.gpflow_gp.likelihood.variance.prior = gpflow.priors.LogNormal(0, 1000)

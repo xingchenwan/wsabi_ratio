@@ -122,7 +122,7 @@ class Gaussian(Prior):
     def __call__(self, x: ndarray) -> ndarray:
         """See :func:`~Prior.__call__`"""
         validate_dimensions(x, self._dimensions)
-        return np.atleast_1d(self._multivariate_normal._pdf_point_est(x))
+        return np.atleast_1d(self._multivariate_normal.pdf(x))
 
     def log_eval(self, x:ndarray) -> ndarray:
         """Log of the functional value of the prior"""

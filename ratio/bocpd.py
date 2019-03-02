@@ -9,8 +9,9 @@ from functools import partial
 import matplotlib.cm as cm
 from abc import ABC, abstractmethod
 
+# BOCPD Bayesian Changepoint algorithm lift from Cambridge
 
-def BOCD(data, hazard_func, model):
+def BOCPD(data, hazard_func, model):
     maxes = np.zeros(len(data) + 1)
 
     R = np.zeros((len(data) + 1, len(data) + 1))
@@ -105,6 +106,8 @@ class StudentT(Model):
 
 
 def demo():
+    import pandas as pd
+    file_path = '/Users/xingchenwan/Dropbox/4YP/Codes/wsabi_ratio/data/nile.csv'
 
     def generate_normal_time_series(num, minl=50, maxl=1000):
         data = np.array([], dtype=np.float64)
@@ -118,8 +121,17 @@ def demo():
             data = np.concatenate((data, tdata))
         return data
 
-    data = generate_normal_time_series(4, 50, 52)
-    R, maxes = BOCD(data, partial(constant_hazard, 250), StudentT(0.1, .01, 1, 0))
+    def load_nile_data():
+        raw_data = pd.read_csv(file_path, ).values
+        raw_data = raw_data[:, :]
+        year = raw_data[:, 0]
+        levels = raw_data[:, 1]
+        return year, levels
+
+    # data = generate_normal_time_series(4, 50, 52)
+    year, data = load_nile_data()
+
+    R, maxes = BOCPD(data, partial(constant_hazard, 50), StudentT(0.1, .01, 1, 0))
     # R, maxes = BOCD(data, partial(constant_hazard, 250), GaussianProcess())
 
     fig, ax = plt.subplots(figsize=[18, 16])
@@ -130,7 +142,7 @@ def demo():
     ax.pcolor(np.array(range(0, len(R[:, 0]), sparsity)),
               np.array(range(0, len(R[:, 0]), sparsity)),
               -np.log(R[0:-1:sparsity, 0:-1:sparsity]),
-              cmap=cm.Greys, vmin=0, vmax=30)
+              cmap=cm.hot, vmin=0, vmax=30)
     ax = fig.add_subplot(3, 1, 3, sharex=ax)
     Nw = 10
     ax.plot(R[Nw, Nw:-1])
