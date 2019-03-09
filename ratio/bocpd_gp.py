@@ -14,6 +14,7 @@ from emukit.quadrature.methods import VanillaBayesianQuadrature
 import logging
 from bayesquad.quadrature import WarpedIntegrandModel, WsabiLGP, WarpedGP, GP
 from bayesquad.priors import Gaussian
+import matplotlib.dates as mdates
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -34,13 +35,15 @@ def BOCPD_GP(data, hazard_func, mode='mc',):
     #gp.Gaussian_noise.variance = 1e-1
 
     gp = None
+    quadrature_kern = None
+    quadrature_noise = None
     for t, x in enumerate(data):
         # Evaluate the predictive distribution for the new datum under each of
         # the parameters.  This is the standard thing from Bayesian inference.
         if t == 0:
             gp_X = np.array(0).reshape(1, 1)
             gp_Y = np.array(x).reshape(1, 1)
-            kern = GPy.kern.Matern32(input_dim=1, lengthscale=5., variance=10.)
+            kern = GPy.kern.Matern32(input_dim=1, lengthscale=np.exp(4), variance=np.exp(-1))
             gp = GPy.models.GPRegression(gp_X, gp_Y, kern)
             gp.Gaussian_noise.variance = 1e-1
             if mode == 'fix':
@@ -50,7 +53,7 @@ def BOCPD_GP(data, hazard_func, mode='mc',):
             elif mode == 'bq':
                 pred_mean, pred_var = bq(gp, x)
             elif mode == 'wsabi':
-                pred_mean, pred_var = wsabi(gp, x)
+                pred_mean, pred_var, quadrature_kern, quadrature_noise = wsabi(gp, x, quadrature_kern, quadrature_noise)
             else:
                 raise ValueError
             pred_mean = pred_mean.reshape(-1)
@@ -65,20 +68,17 @@ def BOCPD_GP(data, hazard_func, mode='mc',):
                                                      "but got"+str(gp_X.shape[0])
             gp.set_XY(gp_X, gp_Y)
 
-            try:
-                if mode == 'fix':
-                    pred_mean_t, pred_var_t = fix_params(gp, x)
-                elif mode == 'mc':
-                    pred_mean_t, pred_var_t = monte_carlo(gp, x)
-                elif mode == 'bq':
-                    pred_mean_t, pred_var_t = bq(gp, x)
-                elif mode == 'wsabi':
-                    pred_mean_t, pred_var_t = wsabi(gp, x)
-                else:
-                    raise ValueError
-            except np.linalg.linalg.LinAlgError:
-                logging.warning("Error at iteration"+str(t)+". Skipped")
-                continue
+            if mode == 'fix':
+                pred_mean_t, pred_var_t = fix_params(gp, x)
+            elif mode == 'mc':
+                pred_mean_t, pred_var_t = monte_carlo(gp, x)
+            elif mode == 'bq':
+                pred_mean_t, pred_var_t = bq(gp, x)
+            elif mode == 'wsabi':
+                pred_mean_t, pred_var_t, quadrature_kern, quadrature_noise = \
+                    wsabi(gp, x, quadrature_kern, quadrature_noise)
+            else:
+                raise ValueError
 
             pred_mean = np.concatenate([pred_mean, pred_mean_t.reshape(-1)])
             pred_var = np.concatenate([pred_var, pred_var_t.reshape(-1)])
@@ -102,7 +102,7 @@ def BOCPD_GP(data, hazard_func, mode='mc',):
         # stability.
         Z[t] = np.sum(R[:, t+1]) # Evidence at time t
         R[:, t + 1] = R[:, t + 1] / Z[t]
-        # print('R', R[:, t])
+        #print('R', R[:, t])
         # Update the parameter sets for each possible run length.
 
         maxes[t] = R[:, t].argmax()
@@ -123,7 +123,7 @@ def fix_params(gpy_gp: GPy.core.gp, x):
     return gpy_gp.predict_noiseless(x)
 
 
-def monte_carlo(gpy_gp: GPy.core.gp, x, budget=100):
+def monte_carlo(gpy_gp: GPy.core.gp, x, budget=50):
     """Marginalise the GP Hyperparamters using Hybrid Monte Carlo"""
     from ratio.posterior_mc_inference import PosteriorMCSampler
 
@@ -165,6 +165,7 @@ def bq(gpy_gp: GPy.core.gp, x):
     for i in range(params.shape[0]):
         gpy_gp = _set_model(gpy_gp, params[i, :])
         log_liks[i] = gpy_gp.log_likelihood()
+        #print('params', params[i,:], log_liks[i])
         pred_means[i], pred_vars[i] = gpy_gp.predict_noiseless(x)
 
     rq = np.exp(log_liks) * pred_means
@@ -186,22 +187,27 @@ def bq(gpy_gp: GPy.core.gp, x):
     return rq_int/r_int, rvar_int/r_int
 
 
-def wsabi(gpy_gp: GPy.core.GP, x,):
+def wsabi(gpy_gp: GPy.core.GP, x, kern=None, noise=None):
     """Initial grid sampling, followed by WSABI quadrature"""
     from ratio.posterior_mc_inference import PosteriorMCSampler
     budget = 50
     x = np.array(x).reshape(1, 1)
-    sampler = PosteriorMCSampler(gpy_gp)
-    log_params = sampler.hmc(num_iters=budget, mode='gpy')
-    #log_params = np.empty((budget, 3))
+    #sampler = PosteriorMCSampler(gpy_gp)
+
+    #log_params = np.log(sampler.hmc(num_iters=budget, mode='gpy'))
+    #print(log_params)
+    log_params = np.empty((budget, 3))
     #for i in range(budget):
-    #   log_params[i, :] = scipy.stats.multivariate_normal.rvs(mean=np.zeros((3, )), cov=4*np.eye(3))
-    # log_params = np.mgrid[-1:3.1:1, -2:3.1:2, -4:0.1:1].reshape(3, -1).T
-    # print(log_params)
+    #   log_params[i, :] = scipy.stats.multivariate_normal.rvs(mean=np.array([0, 0, 0]), cov=4*np.eye(3))
+    log_params = np.mgrid[0:4.1:1, 0:4.1:1, -4:-0.1:1.5].reshape(3, -1).T
     budget = log_params.shape[0]
 
-    kern = GPy.kern.RBF(input_dim=1, variance=1., lengthscale=1.)
-    prior = Gaussian(mean=np.zeros((3, )), covariance=4*np.eye(3))
+    if kern is None:
+        kern = GPy.kern.RBF(input_dim=1, variance=1., lengthscale=1.)
+    if noise is None:
+        noise = 1e-3
+
+    prior = Gaussian(mean=np.array([0, 0, 0]), covariance=4*np.eye(3))
     log_phis = np.empty((budget, 3))
     log_liks = np.empty((budget, ))
     pred_means = np.empty((budget, ))
@@ -209,15 +215,25 @@ def wsabi(gpy_gp: GPy.core.GP, x,):
 
     for i in range(log_params.shape[0]):
         log_phi = log_params[i, :]
-        _set_model(gpy_gp, log_phi)
+        _set_model(gpy_gp, np.exp(log_phi))
         log_lik = gpy_gp.log_likelihood()
+        #print('params', log_phi, log_lik)
         log_phis[i] = log_phi
         log_liks[i] = log_lik
         pred_means[i], pred_vars[i] = gpy_gp.predict_noiseless(x)
 
+    if np.max(log_liks) > 15.:
+        # For highly peaked likelihoods, we do not use quadrature and simply use MAP estimate
+        idx = log_liks.argmax()
+        return pred_means[idx], pred_vars[idx], kern, noise
+
     r_gp = GPy.models.GPRegression(log_params[:1, :], np.sqrt(2 * np.exp(log_liks[0])).reshape(1, -1), kern)
+    r_gp.Gaussian_noise.variance = noise
     r_model = WarpedIntegrandModel(WsabiLGP(r_gp), prior)
     r_model.update(log_phis[1:, :], np.exp(log_liks[1:]).reshape(1, -1))
+    #print(r_gp.X, r_gp.Y)
+    #from IPython.display import display
+    #display(r_gp)
     r_gp.optimize()
     r_int = r_model.integral_mean()[0]
 
@@ -238,7 +254,7 @@ def wsabi(gpy_gp: GPy.core.GP, x,):
     rvar_gp.optimize()
     rvar_int = rvar_model.integral_mean()[0]
 
-    return rq_int / r_int, rvar_int / r_int
+    return rq_int / r_int, rvar_int / r_int, r_gp.kern, r_gp.Gaussian_noise.variance
 
 
 def _set_model(gpy_gp: GPy.core.GP, params):
@@ -269,39 +285,50 @@ def demo():
 
     def load_nile_data():
         raw_data = pd.read_csv(file_path, ).values
-        raw_data = raw_data[0:700, :]
+        raw_data = raw_data[:600, :]
         year = raw_data[:, 0]
         levels = raw_data[:, 1]
         return year, levels
 
     def load_dji_crisis():
-        raw_data = pd.read_csv(dji_2006).values
-        raw_data = raw_data[500:1000, :]
-        log_rtn = raw_data[:, -1]
-        daily_vol = raw_data[:, -2]
-        return log_rtn, daily_vol
+        scaling = 60
+        raw_data = pd.read_csv(dji_2006)
+
+        raw_data = raw_data.iloc[::3, :]
+        dt = pd.to_datetime(raw_data.iloc[:, 0])
+        data = raw_data.values
+        log_rtn = data[:, -1] * scaling
+        daily_vol = data[:, -2]
+        return dt, log_rtn, daily_vol, scaling
 
 
 
-    # = generate_normal_time_series(7, 10, 11)
-
-    year, data = load_nile_data()
+    # data = generate_normal_time_series(7, 40, 45)
+    dt, data, data2, scaling = load_dji_crisis()
     R, maxes = BOCPD_GP(data, partial(constant_hazard, 50))
+    years = mdates.YearLocator()
 
-    f, (ax1, ax2) = plt.subplots(2, 1, sharex=True)
-    ax1.plot(data,)
+    f, (ax1, ax2) = plt.subplots(2, 1)
+    # axes = 3 * np.arange(R.shape[0]-1) / 365 + 2005
+    ax1.plot(dt, data/scaling, marker=".", linestyle='None')
     #ax1.axvline(722-year[0], color='r', linewidth=2, linestyle='--')
-    ax1.set_ylabel("Nile water level (m)")
+    ax1.set_xlim(np.min(dt), np.max(dt))
+    ax2.set_xlabel("Year")
+    ax1.set_ylabel("Daily Log-return")
     sparsity = 1  # only plot every fifth data for faster display
-    ax2.pcolor(np.array(range(0, R.shape[0], sparsity)),
+    ax2.pcolor(3 * np.array(range(0, R.shape[0], sparsity)),
               np.array(range(0, prune_length, sparsity)),
-              -np.log(R[:prune_length:sparsity, ::sparsity]),
+              -np.log10(R[:prune_length:sparsity, :-1:sparsity]),
               cmap=cm.hot, vmin=0, vmax=150)
     #ax2.axvline(722-year[0], color='r', linewidth=2, linestyle='--')
-    ax2.set_xlabel("Number of years since AD 622")
-    ax2.set_ylabel("Posterior Run Length (yr)")
+    ax1.xaxis.set_major_locator(years)
+    ax2.set_xlabel("Trading days since inception")
+    ax2.set_ylabel("Posterior Run Length (day)")
     plt.show()
     # ax = fig.add_subplot(3, 1, 3, sharex=ax)
     # Nw = 10
     # plt.plot(R[Nw, Nw:-1])
     # plt.show()
+    #Nw = 10
+    #ax3.plot(R[Nw, Nw:-1])
+    #plt.show()

@@ -88,7 +88,20 @@ def changepoint():
     # from ratio.bocpd import demo
     demo()
 
+def plot_kernel():
+    import GPy
+    x = np.array([[0.]])
+    y = np.array([[0.]])
+    kern = GPy.kern.StdPeriodic(input_dim=1, lengthscale=0.5, variance=0.5, period=1)
+    gp = GPy.models.GPRegression(x, y, kern)
+    samples = np.arange(0., 5., 0.01)
+    res = gp.posterior_samples_f(samples.reshape(-1, 1), 5)
+    plt.figure(1, figsize=(5,5))
+    kern.plot(ax=plt.gca())
+    plt.figure(2,figsize=(5,5))
+    plt.plot(samples, np.squeeze(res))
+    plt.show()
 
 if __name__ == "__main__":
     np.set_printoptions(threshold=1000)
-    changepoint()
+    plot_kernel()
