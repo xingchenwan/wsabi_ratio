@@ -50,8 +50,8 @@ def yacht():
 
     #eval_perf(rq, 'wsabi')
     #exit()
-    rq.bq()
     #rq.wsabi()
+    rq.wsabi_bqr()
     #rq.bq()
     #rq.bq()
     #eval_wsabi_perf(rq)
@@ -88,6 +88,7 @@ def changepoint():
     # from ratio.bocpd import demo
     demo()
 
+
 def plot_kernel():
     import GPy
     x = np.array([[0.]])
@@ -104,4 +105,4 @@ def plot_kernel():
 
 if __name__ == "__main__":
     np.set_printoptions(threshold=1000)
-    plot_kernel()
+    yacht()

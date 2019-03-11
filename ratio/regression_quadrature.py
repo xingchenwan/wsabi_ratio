@@ -57,11 +57,11 @@ class RegressionQuadrature:
         local_gp.set_XY(X, Y)
 
         # Assign prior to the hyperparameters
-        variance_prior = GPy.priors.LogGaussian(mu=0., sigma=100)
-        lengthscale_prior = GPy.priors.LogGaussian(mu=0., sigma=100.)
-        noise_prior = GPy.priors.LogGaussian(mu=0., sigma=100.)
+        variance_prior = GPy.priors.LogGaussian(mu=0., sigma=2)
+        lengthscale_prior = GPy.priors.LogGaussian(mu=0., sigma=2.)
+        noise_prior = GPy.priors.LogGaussian(mu=0., sigma=2.)
         if isinstance(self.gpr, PeriodicGPRegression):
-            period_prior = GPy.priors.LogGaussian(mu=0., sigma=100.)
+            period_prior = GPy.priors.LogGaussian(mu=0., sigma=2.)
 
         local_gp.kern.variance.set_prior(variance_prior)
         local_gp.kern.lengthscale.set_prior(lengthscale_prior)
@@ -277,26 +277,28 @@ class RegressionQuadrature:
         # Initialise to the MAP estimate
         map_model, _, _ = self.maximum_a_posterior(num_restarts=1, max_iters=1000, verbose=False)
         display(map_model)
-        self.gpr.reset_params()
-        #if isinstance(self.gpr, PeriodicGPRegression):
-        #    self.gpr.set_params(variance=map_model.std_periodic.variance,
-        #                        gaussian_noise=map_model.Gaussian_noise.variance)
-        #elif isinstance(self.gpr, RBFGPRegression):
-        #    self.gpr.set_params(variance=map_model.rbf.variance, gaussian_noise=map_model.Gaussian_noise.variance)
+        # self.gpr.reset_params()
+        if isinstance(self.gpr, PeriodicGPRegression):
+            self.gpr.set_params(variance=map_model.std_periodic.variance,
+                                gaussian_noise=map_model.Gaussian_noise.variance)
+        elif isinstance(self.gpr, RBFGPRegression):
+            self.gpr.set_params(variance=map_model.rbf.variance, gaussian_noise=map_model.Gaussian_noise.variance)
 
         # Set prior mean to the MAP value
         tmp_map = map_model.param_array
-        map_vals = np.empty(len(tmp_map))
-        map_vals[0] = tmp_map[2]
-        map_vals[1] = tmp_map[1]
-        map_vals[2] = tmp_map[0]
-        map_vals[3] = tmp_map[3]
+        #map_vals = np.empty(len(tmp_map))
+        #map_vals[0] = tmp_map[2]
+        #map_vals[1] = tmp_map[1]
+        #map_vals[2] = tmp_map[0]
+        #map_vals[3] = tmp_map[3]
 
         # self.prior = Gaussian(mean=map_vals.reshape(-1), covariance=self.options['prior_variance'])
 
-        log_phi_initial = np.log(map_vals).reshape(1, -1)
-        # log_phi_initial = self.options['prior_mean'].reshape(1, -1)
-        log_r_initial = np.sqrt(2 * np.exp(self.gpr.log_sample(phi=map_vals.reshape(-1))[0]))
+        #log_phi_initial = np.log(tmp_map[1:-1]).reshape(1, -1)
+        log_phi_initial = self.options['prior_mean'].reshape(1, -1)
+        log_r_initial = np.sqrt(2 * np.exp(self.gpr.log_sample(
+            phi=np.exp(log_phi_initial.reshape(-1))
+        )[0]))
         #print(log_r_initial)
         pred = np.zeros((test_x.shape[0], ))
         pred_var = np.zeros((test_x.shape[0], ))
@@ -409,175 +411,141 @@ class RegressionQuadrature:
             self.visualise(pred, pred_var, test_y)
         return rmse, ll, quad_time-start
 
-    def wsabi_ratio(self):
+    def wsabi_bqr(self, verbose=True, compute_var=True):
+        from bayesquad.quadrature import compute_mean_gp_prod_gpy
 
-        # Implementation of the Bayesian Quadrature for Ratio paper
-
-        def unwarp(warped_y: np.ndarray, alpha: float):
-            """
-            Unwarp the output of a WSABI GP
-            :param warped_y:
-            :return:
-            """
-            return 0.5 * (warped_y ** 2) + alpha
-
-        def get_phi_s(phi_c, method='latin'):
-            """
-            Construct a Voronoi diagram and identify the locations of phi_s
-            (See Bayesian Quadrature for Ratio paper for reasoning)
-            Method: 'latin' - latin hypercube sampling; 'voronoi' - voronoi diagram (caution: this method scales very
-            poorly in higher dimension!)
-            """
-            # todo: implement the Latin Hypercube Sampling here!
-            from scipy.spatial import Voronoi
-            if method == 'voronoi':
-                vor = Voronoi(phi_c)
-                candidates = vor.vertices
-
-                ub = np.amax(phi_c, axis=0) + 1  # Upper bound
-                lb = np.amin(phi_c, axis=0) - 1  # Lower bound
-                ub = np.tile(ub, (candidates.shape[0], 1))
-                candidates = candidates[~np.any(ub - candidates < 0, axis=1)]
-                lb = np.tile(lb, (candidates.shape[0], 1))
-                candidates = candidates[~np.any(candidates - lb < 0, axis=1)]
-            elif method == 'latin':
-                raise NotImplemented()
-            else:
-                raise NotImplemented()
-            logging.info(str(candidates.shape[0])+" candidate phi_s points returned.")
-            return candidates
-
-        # 1.1 Allocating number of maximum evaluations
+        # Allocating number of maximum evaluations
+        start = time.time()
         budget = self.options['wsabi_budget']
-        batch_count = 1
-        test_x = self.gpr.X_test[:, :]
-        test_y = self.gpr.Y_test[:]
+        test_x = self.gpr.X_test
+        test_y = self.gpr.Y_test
 
-        # 1.2 Allocate memory of the samples and results
-        log_phi_c = np.zeros((budget * batch_count, self.dimensions,))  # The log-hyperparameter sampling points
-        log_r = np.zeros((budget * batch_count,))  # The log-likelihood function
-        q = np.zeros((test_x.shape[0], budget * batch_count))  # Prediction
+        # Allocate memory of the samples and results
+        log_phi = np.zeros((budget, self.dimensions,))  # The log-hyperparameter sampling points
+        log_r = np.zeros((budget, ))  # The log-likelihood function
+        q = np.zeros((test_x.shape[0], budget))  # Prediction
+        var = np.zeros((test_x.shape[0], budget))  # Posterior variance
 
-        # 2. Initial points - note that as per GPML convention, the hyperparameters are expressed in log scale
-        # 2.1 Initialise to the MAP estimate
-        map_model, _, _ = self.maximum_a_posterior(num_restarts=1, max_iters=500, verbose=False)
-        self.gpr.set_params(variance=map_model.rbf.variance, gaussian_noise=map_model.Gaussian_noise.variance)
-        log_phi_initial = np.log(map_model.rbf.lengthscale).reshape(1, -1)
-        log_r_initial = self.gpr.log_sample(phi=np.exp(log_phi_initial))[0]
-        pred = np.zeros((test_x.shape[0],))
+        # Initial points - note that as per GPML convention, the hyperparameters are expressed in log scale
+        # Initialise to the MAP estimate
+        map_model, _, _ = self.maximum_a_posterior(num_restarts=1, max_iters=1000, verbose=False)
+        if isinstance(self.gpr, PeriodicGPRegression):
+            self.gpr.set_params(variance=map_model.std_periodic.variance,
+                                gaussian_noise=map_model.Gaussian_noise.variance)
+        elif isinstance(self.gpr, RBFGPRegression):
+            self.gpr.set_params(variance=map_model.rbf.variance, gaussian_noise=map_model.Gaussian_noise.variance)
 
-        # 2.2 Setting up kernel - Note we only marginalise over the lengthscale terms, other hyperparameters are set
-        # to the MAP values.
+        # Set prior mean to the MAP value
+        # self.prior = Gaussian(mean=map_vals.reshape(-1), covariance=self.options['prior_variance'])
+
+        log_phi_initial = self.options['prior_mean'].reshape(1, -1)
+        log_r_initial = np.sqrt(2 * np.exp(self.gpr.log_sample(
+            phi=np.exp(log_phi_initial.reshape(-1))
+        )[0]))
+        pred = np.zeros((test_x.shape[0], ))
+        pred_var = np.zeros((test_x.shape[0], ))
+
+        # Setting up kernel - Note we only marginalise over the lengthscale terms, other hyperparameters are set to the
+        # MAP values.
         kern = GPy.kern.RBF(self.dimensions,
-                            variance=2.,
-                            lengthscale=2.)
+                            variance=1.,
+                            lengthscale=1.)
 
-        log_r_gp = GPy.models.GPRegression(log_phi_initial, log_r_initial.reshape(1, -1), kern)
-        log_r_model = WarpedIntegrandModel(WsabiLGP(log_r_gp), self.prior)
+        r_gp = GPy.models.GPRegression(log_phi_initial, log_r_initial.reshape(1, -1), kern)
+        r_model = WarpedIntegrandModel(WsabiLGP(r_gp), self.prior)
 
-        # 3.1, within the given allowance, compute an estimate of the model evidence. Model evidence is the common
+        # Firstly, within the given allowance, compute an estimate of the model evidence. Model evidence is the common
         # denominator for all predictive distributions.
         for i_a in range(budget):
-            log_phi_i = np.array(select_batch(log_r_model, batch_count, )).reshape(batch_count, -1)
+            log_phi_i = np.array(select_batch(r_model, 1, "Kriging Believer")).reshape(1, -1)
             log_r_i = self.gpr.log_sample(phi=np.exp(log_phi_i))[0]
+            log_r[i_a] = log_r_i
+            log_phi[i_a, :] = log_phi_i
+        quad_time = time.time()
 
-            log_r[i_a:i_a + batch_count] = log_r_i
-            log_phi_c[i_a:i_a + batch_count, :] = log_phi_i
-
-            log_r_model.update(log_phi_i, log_r_i.reshape(1, -1))
-
-        # 4. Obtain phi_s locations
-        log_phi_s = get_phi_s(log_phi_c)
-
-        # 5. Rescale the original model
-        max_log_r = np.max(log_r)
-        r = np.exp(log_r - max_log_r)
-        r_gp = GPy.models.GPRegression(log_phi_c[:1], np.sqrt(2 * r[0].reshape(-1, 1)), kern)
-        warped_r = WsabiLGP(r_gp)
-        r_model = WarpedIntegrandModel(warped_r, self.prior)
-        r_model.update(log_phi_c[1:], r[1:].reshape(-1, 1))
+        r = np.exp(log_r)
+        r_gp = GPy.models.GPRegression(log_phi[:1, :], np.sqrt(2 * r[0].reshape(1, 1)), kern)
+        r_model = WarpedIntegrandModel(WsabiLGP(r_gp), self.prior)
+        r_model.update(log_phi[1:, :], r[1:].reshape(-1, 1))
         r_gp.optimize()
-        m_int_r = np.exp(np.log(r_model.integral_mean()[0]) + max_log_r)  # Model evidence
-        log_m_int_r = np.log(m_int_r)  # Model log-evidence
-        print("Estimate of model evidence: ", m_int_r, )
-        print("Model log-evidence ", log_m_int_r)
+        r_int = r_model.integral_mean()[0] # Model evidence
 
-        # 6. Compute the eta_{rr} vector on log_phi_s
-        m_rs = unwarp(r_gp.predict_noiseless(log_phi_s)[0], warped_r._alpha)
-        # Posterior mean of the GP over original r at phi_s points
-        log_m_rs = np.log(m_rs) + max_log_r  # Log of the posterior mean of GP over original r
-        log_m_rs[log_m_rs == -np.inf] = max_log_r
-        log_r_gp = GPy.models.GPRegression(log_phi_c, log_r.reshape(-1, 1),)
-        log_r_gp.optimize()
-        m_log_rs = log_r_gp.predict_noiseless(log_phi_s)[0]  # Posterior mean of the GP over log(r)
-        # print(m_log_rs)
-        eta_rr = m_rs * (m_log_rs - log_m_rs)
-        # Concatenate phi_c and 0 to the above vector
-        eta_rr_concat = np.concatenate((eta_rr, np.zeros((log_phi_c.shape[0], 1))))
-        log_phi_concat = np.concatenate((log_phi_s, log_phi_c))
+        print("Estimate of model evidence: ", r_int,)
+        print("Model log-evidence ", np.log(r_int))
 
-        # 6.1 Similar to r, compute the integral mean of eta_{rr}
-        eta_rr_gp = GPy.models.GPRegression(log_phi_concat, eta_rr_concat.reshape(-1, 1), kern)
-        logging.info("eta_{rr} GP object initialised")
-        m_int_eta_rr = self._wrap_emukit(eta_rr_gp)[0]
-        logging.info("eta_{rr} estimate "+str(m_int_eta_rr))
-
-        # 7, compute and marginalise the predictive distribution for each individual points
+        # Secondly, compute and marginalise the predictive distribution for each individual points
         for i_x in range(test_x.shape[0]):
 
             # Note that we do not active sample again for q, we just use the same samples sampled when we compute
             # the log-evidence
-            _, q_initial = self.gpr.log_sample(phi=np.exp(log_phi_initial), x=test_x[i_x, :])
+            _, q_initial, var_initial = self.gpr.log_sample(phi=np.exp(log_phi_initial), x=test_x[i_x, :])
 
-            # 7.1 Initialise GPy GP surrogate for and q(\phi)r(\phi)
+            # Initialise GPy GP surrogate for and q(\phi) - note that this is a BQZ approach and we do not model rq
+            # as one GP but separate GPs to account for correlation
             # Sample for q values
-            for i_b in range(budget * batch_count):
-                log_phi_i = log_phi_c[i_b, :]
-                neg_log_r_i, q_i = self.gpr.log_sample(phi=np.exp(log_phi_i), x=test_x[i_x, :])
-                q[i_x, i_b] = q_i
+            for i_b in range(budget):
+                log_phi_i = log_phi[i_b, :]
+                _, q[i_x, i_b], var[i_x, i_b] = self.gpr.log_sample(phi=np.exp(log_phi_i), x=test_x[i_x, :])
 
-            # 8. Formulate relevant integrals and evaluate the integrals
-            q_gp = GPy.models.GPRegression(log_phi_c, q[i_x, :].reshape(-1, 1), kern)
-            q_gp.optimize()
-            # 8.1 Evaluate rho_{0}
+            # Enforce positivity in q
+            q_x = q[i_x, :]
+            var_x = var[i_x, :]
 
-            rq = q[i_x, :] * r
-
-            rq_gp = GPy.models.GPRegression(log_phi_c, rq.reshape(-1, 1), kern)
-            m_int_rq = self._wrap_emukit(rq_gp)[0] * np.exp(max_log_r)
-            rho_0 = m_int_rq / m_int_r
-
-            # 8.2 Evaluate C_{q} - Adjustment factor 1
-            m_qs = q_gp.predict_noiseless(log_phi_s)[0].reshape(-1)
-            m_qs = np.concatenate((q[i_x, :], m_qs)).reshape(-1, 1)
-
-            # 8.3 Evaluate C_{r} - Adjustment factor 2
-            q_eta_rr = m_qs * eta_rr_concat
-            # This quantity is very small; to translation and scaling to prevent numerical issues
-            q_eta_rr_min = np.min(q_eta_rr)
-            if q_eta_rr_min < 0:
-                q_eta_rr -= q_eta_rr_min
+            q_min = np.min(q_x)
+            if q_min < 0:
+                q_x = q_x - q_min
             else:
-                q_eta_rr_min = 0
-            log_q_eta_rr = np.log(q_eta_rr)
-            max_log_q_eta_rr = np.max(log_q_eta_rr)
-            q_eta_rr = np.exp(log_q_eta_rr - max_log_q_eta_rr)
+                q_min = 0
 
-            q_eta_rr_gp = GPy.models.GPRegression(log_phi_concat, q_eta_rr.reshape(-1, 1),)
-            m_int_q_eta_rr = np.exp(np.log(self._wrap_emukit(q_eta_rr_gp)[0]) + max_log_q_eta_rr) + \
-                             q_eta_rr_min * m_int_r
-            c_r = 1. / m_int_r * (m_int_q_eta_rr - m_int_eta_rr * (m_int_rq / m_int_r))
-            print(m_int_r, m_int_q_eta_rr, m_int_eta_rr, m_int_rq)
-            exit()
-            pred[i_x] = rho_0 + c_r
-            print('Progress: ', i_x + 1, '/', test_x.shape[0])
+            # Do the same exponentiation and rescaling trick for q
+            q_gp = GPy.models.GPRegression(log_phi[:1, :], np.sqrt(2 * q_x[0].reshape(1, 1)), kern)
+            q_model = WarpedIntegrandModel(WsabiLGP(q_gp), self.prior)
+            q_model.update(log_phi[1:, :], q_x[1:].reshape(-1, 1))
+            q_gp.optimize()
+
+            rq_gp = GPy.models.GPRegression(log_phi, q_model.gp._gp.Y * r_model.gp._gp.Y, kern)
+            rq_gp.optimize()
+
+            # Evaluate numerator
+            alpha_q = q_model.gp._alpha
+            alpha_r = r_model.gp._alpha
+
+            n = alpha_r * alpha_q + \
+                 0.5 * alpha_r * compute_mean_gp_prod_gpy(self.prior, q_model.gp._gp, q_model.gp._gp) + \
+                 0.5 * alpha_q * compute_mean_gp_prod_gpy(self.prior, r_model.gp._gp, r_model.gp._gp) + \
+                 0.25 * (compute_mean_gp_prod_gpy(self.prior, rq_gp, rq_gp)) + \
+                 q_min * r_int
+            pred[i_x] = n / r_int
+            if compute_var:
+                var_gp = GPy.models.GPRegression(log_phi[:1, :], np.sqrt(2 * var_x[0].reshape(1, 1)), kern)
+                var_model = WarpedIntegrandModel(WsabiLGP(var_gp), self.prior)
+                var_model.update(log_phi[1:, :], var_x[1:].reshape(-1, 1))
+                var_gp.optimize()
+
+                rvar_gp = GPy.models.GPRegression(log_phi, var_model.gp._gp.Y * r_model.gp._gp.Y, kern)
+                rvar_gp.optimize()
+
+                alpha_var = var_model.gp._alpha
+                var_num = alpha_r * alpha_var + \
+                          0.5 * alpha_r * compute_mean_gp_prod_gpy(self.prior, var_model.gp._gp, var_model.gp._gp) + \
+                          0.5 * alpha_var * compute_mean_gp_prod_gpy(self.prior, r_model.gp._gp, r_model.gp._gp) + \
+                          0.25 * (compute_mean_gp_prod_gpy(self.prior, rvar_gp, rvar_gp))
+                pred_var[i_x] = var_num / r_int
+            logging.info('Progress: '+str(i_x+1)+'/'+str(test_x.shape[0]))
 
         rmse = self.compute_rmse(pred, test_y)
-        print(pred, test_y)
-        self.visualise(pred, test_y)
         print('Root Mean Squared Error:', rmse)
-        return rmse
-
+        if compute_var:
+            ll, cs = self.compute_ll_cs(pred, pred_var, test_y)
+            print('Log-likelihood', ll)
+            print('Calibration score', cs)
+        end = time.time()
+        print("Active Sampling Time: ", quad_time-start)
+        print("Total Time: ", end-start)
+        if verbose:
+            logging.info(pred, test_y)
+            self.visualise(pred, pred_var, test_y)
+        return rmse, None, quad_time-start
     # ----- Evaluation Metric ---- #
 
     def reset_prior(self):
@@ -674,12 +642,12 @@ class RegressionQuadrature:
 
     def _unpack_options(self,
                         prior_mean: Union[float, np.ndarray] = 0.,
-                        prior_variance: Union[float, np.ndarray] = 100.,
+                        prior_variance: Union[float, np.ndarray] = 4.,
                         smc_budget: int = 100,
                         naive_bq_budget: int = 200,
                         naive_bq_kern_lengthscale: float = 1.,
                         naive_bq_kern_variance: float = 1.,
-                        wsabi_budget: int = 300,
+                        wsabi_budget: int = 100,
                         posterior_range=(-5., 5.),
                         # The axis ranges between which the posterior samples are drawn
                         posterior_eps: float = 0.02,

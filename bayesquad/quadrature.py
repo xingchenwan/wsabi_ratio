@@ -8,6 +8,7 @@ import numpy as np
 from GPy.kern import Kern, RBF
 # from multimethod import multimethod
 from numpy import ndarray, newaxis
+import GPy
 
 from .decorators import flexible_array_dimensions
 from .gps import WarpedGP, WsabiLGP, GP
@@ -144,7 +145,7 @@ class IntegrandModel:
     def integral_mean(self,) -> float:
         """Compute the mean of the integral of the function under this model."""
         if isinstance(self.prior, Gaussian) and isinstance(self.gp.kernel, RBF):
-            return self._compute_mean(self.prior, self.gp, self.gp.kernel)
+            return self._compute_mean2(self.prior, self.gp, self.gp.kernel)
         elif isinstance(self.prior, Gaussian1D) and isinstance(self.gp.kernel, RBF):
             return self._compute_mean(self.prior, self.gp, self.gp.kernel)
         else:
@@ -153,6 +154,10 @@ class IntegrandModel:
     @staticmethod
     @abstractmethod
     def _compute_mean(prior, gp, kernel, log_transform=False) -> float: pass
+
+    @staticmethod
+    @abstractmethod
+    def _compute_mean2(prior, gp, kernel, log_transform=False) -> float: pass
 
     def fantasise(self, x, y):
         self.gp.fantasise(x, y)
@@ -245,6 +250,105 @@ class WarpedIntegrandModel(IntegrandModel):
         K = np.exp(-k / 2)
 
         return alpha + (np.linalg.det(2 * np.pi * np.linalg.inv(C)) ** 0.5) / 2 * (A.T @ (K * L) @ A), None, None
+
+    @staticmethod
+    def _compute_mean2(prior: Gaussian, gp: WarpedGP, kernel: RBF,):
+        """Square of a gaussian process"""
+        alpha = gp._alpha
+        return alpha + 0.5 * compute_mean_gp_prod(prior, gp, gp)
+
+
+def compute_mean_gp_prod(prior: Gaussian, r: WarpedGP, q: WarpedGP):
+    """
+    Xingchen Wan Addition - 9 Mar 2019
+    :param prior:
+    :param r:
+    :param q:
+    :return:
+    """
+    from scipy.stats import multivariate_normal
+    X_r = r._gp.X
+    X_q = q._gp.X
+    assert X_q.shape[0] == X_r.shape[0]
+
+    mu = prior.mean
+    sigma = prior.covariance
+
+    dimensions = r.dimensions
+    N = X_r.shape[0]
+    assert dimensions == q.dimensions, "Dimensionality mismatch between r and q!"
+
+    # Kernel lengthscales and variances
+    h_r = r._gp.kernel.variance.values[0]
+    h_q = q._gp.kernel.variance.values[0]
+    W_q = q._gp.kernel.lengthscale.values[0] * np.eye(dimensions)
+    W_r = r._gp.kernel.lengthscale.values[0] * np.eye(dimensions)
+
+    # Woodbury vectors
+    q_wv_t = np.transpose(q._gp.posterior.woodbury_vector)
+    r_wv = r._gp.posterior.woodbury_vector
+
+    # Construct the normal pdf
+    norm_pdf_mean = np.tile(mu, 2)
+    norm_pdf_cov = np.block([
+        [sigma + W_q, sigma],
+        [sigma, sigma + W_r]
+    ])
+    norm_pdf = multivariate_normal(mean=norm_pdf_mean, cov=norm_pdf_cov)
+    query_grid = np.empty((N**2, dimensions*2))
+    for i in range(N):
+        for j in range(N):
+            query_grid[i*N+j, :] = np.concatenate([X_q[i, :], X_r[j, :]])
+    nu = norm_pdf.pdf(query_grid)
+    nu = nu.reshape(N, N) * (h_r * h_q) ** 2
+    return q_wv_t @ nu @ r_wv
+
+
+def compute_mean_gp_prod_gpy(prior: Gaussian, r: GPy.core.gp, q: GPy.core.gp):
+    """
+    Xingchen Wan Addition - 9 Mar 2019
+    :param prior:
+    :param r:
+    :param q:
+    :return:
+    """
+    from scipy.stats import multivariate_normal
+    X_r = r.X
+    X_q = q.X
+    assert X_q.shape[0] == X_r.shape[0]
+
+    mu = prior.mean
+    sigma = prior.covariance
+
+    N, D = X_r.shape[0], X_r.shape[1]
+    assert D == X_q.shape[1], "Dimensionality mismatch between r and q!"
+    assert isinstance(r.kern, RBF), "quadrature kernel must be RBF!"
+    assert isinstance(q.kern, RBF), "quadrature kernel must be RBF!"
+
+    # Kernel lengthscales and variances
+    h_r = r.kern.variance.values[0]
+    h_q = q.kern.variance.values[0]
+    W_q = q.kern.lengthscale.values[0] * np.eye(D)
+    W_r = r.kern.lengthscale.values[0] * np.eye(D)
+
+    # Woodbury vectors
+    q_wv_t = np.transpose(q.posterior.woodbury_vector)
+    r_wv = r.posterior.woodbury_vector
+
+    # Construct the normal pdf
+    norm_pdf_mean = np.tile(mu, 2)
+    norm_pdf_cov = np.block([
+        [sigma + W_q, sigma],
+        [sigma, sigma + W_r]
+    ])
+    norm_pdf = multivariate_normal(mean=norm_pdf_mean, cov=norm_pdf_cov)
+    query_grid = np.empty((N**2, D*2))
+    for i in range(N):
+        for j in range(N):
+            query_grid[i*N+j, :] = np.concatenate([X_q[i, :], X_r[j, :]])
+    nu = norm_pdf.pdf(query_grid)
+    nu = nu.reshape(N, N) * (h_r * h_q) ** 2
+    return q_wv_t @ nu @ r_wv
 
 
 class OriginalIntegrandModel(IntegrandModel):

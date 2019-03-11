@@ -250,12 +250,12 @@ class RBFGPRegression(Functions):
 
         np.random.seed(4)
         np.random.shuffle(raw_data)
-        n_training = int(self.n * (1 - self.test_ratio))
 
         X_grd = raw_data[:, :-1]
-        Y_grd = raw_data[:, -1] + self.y_offset
+        n = X_grd.shape[0]
+        n_training = int(n * (1 - self.test_ratio))
 
-        test_pt = np.min(test_pt, self.n)
+        Y_grd = raw_data[:, -1] + self.y_offset
 
         # Refactor to 2d array
         if Y_grd.ndim == 1:
@@ -337,7 +337,7 @@ class RBFGPRegression(Functions):
         if phi.ndim == 1:
             phi = np.asarray(phi).reshape(1, -1)
         assert phi.shape[1] == self.dimensions, 'The length of the parameter vector does not match the model dimensions!, ' \
-                                            'Model dimension:'+str(self.dimensions)+" but given data is of "+str(len(phi)) \
+                                            'Model dimension:'+str(self.dimensions)+" but given data is of "+str(phi.shape[1]) \
                                             + str(phi)
         assert phi.ndim == 2, "Phi needs to be a 2-dimensional array!"
         if np.any(phi < 0.):
@@ -628,7 +628,7 @@ class GaussMixture(Functions):
     @staticmethod
     def one_d_normal(x: np.ndarray, mean, var) -> np.ndarray:
         assert x.ndim == 1
-        return np.array([norm._pdf_point_est(x[i], mean, var) for i in range(x.shape[0])])
+        return np.array([norm.pdf(x[i], mean, var) for i in range(x.shape[0])])
 
     @staticmethod
     def multi_d_gauss(x: np.ndarray, mean, cov) -> np.ndarray:

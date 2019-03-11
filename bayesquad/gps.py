@@ -490,6 +490,7 @@ class WsabiLGP(WarpedGP):
         new_min = min(self._alpha, *(0.8 * y))
 
         if new_min is not self._alpha:
+            print(new_min)
             self._update_alpha_and_reprocess_data(new_min)
         else:
             warped_y = self._warp(y)
