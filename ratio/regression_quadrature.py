@@ -109,11 +109,12 @@ class RegressionQuadrature:
         # Sample the parameter posterior, note that we discard the first column (variance) and last column
         # (gaussian noise) since we are interested in marginalising the length-scale hyperparameters only
         sampler = PosteriorMCSampler(self.gpr.model)
-        samples = sampler.hmc(num_iters=budget, mode='gpflow')
-        samples = samples.values[:, :4]
+        samples = sampler.hmc(num_iters=budget+50, mode='gpy')
+        # Toggle this line on when sampling using GPFlow, for it returns a pandas dataframe rather than a numpy array.
+        #samples = samples.values[:, :4]
 
         # samples = sample_from_param_posterior(self.gpr.model, 1000, 1, 'hmc', False)
-        # samples = samples[:, 1:-1]
+        samples = samples[50:, 1:-1]
         logging.info("Parameter posterior sampling completed")
 
         # Now draw samples from the parameter posterior distribution and do Monte Carlo integration
@@ -139,7 +140,7 @@ class RegressionQuadrature:
         print("Calibration Score", cs)
         if verbose:
             self.visualise(pred, pred_var, test_y)
-        return rmse, ll
+        return rmse, ll, None, None
 
     def bq(self, verbose=True):
         """
@@ -170,20 +171,21 @@ class RegressionQuadrature:
         # Initialise to the MAP estimate
         map_model, _, _ = self.maximum_a_posterior(num_restarts=1, max_iters=500, verbose=False)
         self.gpr.reset_params()
-        #if isinstance(self.gpr, RBFGPRegression):
-        #    self.gpr.set_params(variance=map_model.rbf.variance, gaussian_noise=map_model.Gaussian_noise.variance)
-        #elif isinstance(self.gpr, PeriodicGPRegression):
-        #    self.gpr.set_params(variance=map_model.std_periodic.variance,
-        #                        gaussian_noise=map_model.Gaussian_noise.variance)
+        if isinstance(self.gpr, RBFGPRegression):
+            self.gpr.set_params(variance=map_model.rbf.variance, gaussian_noise=map_model.Gaussian_noise.variance)
+        elif isinstance(self.gpr, PeriodicGPRegression):
+            self.gpr.set_params(variance=map_model.std_periodic.variance,
+                                gaussian_noise=map_model.Gaussian_noise.variance)
 
-        tmp_map = map_model.param_array
-        map_vals = np.empty(len(tmp_map))
-        map_vals[0] = tmp_map[2]
-        map_vals[1] = tmp_map[1]
-        map_vals[2] = tmp_map[0]
-        map_vals[3] = tmp_map[3]
+        #tmp_map = map_model.param_array
+        #map_vals = np.empty(len(tmp_map))
+        #map_vals[0] = tmp_map[2]
+        #map_vals[1] = tmp_map[1]
+        #map_vals[2] = tmp_map[0]
+        #map_vals[3] = tmp_map[3]
 
-        log_phi_initial = np.log(map_vals).reshape(1, -1)
+        #log_phi_initial = np.log(map_vals).reshape(1, -1)
+        log_phi_initial = self.prior.mean.reshape(1, -1)
         r_initial = np.exp(self.gpr.log_sample(phi=np.exp(log_phi_initial))[0]) # + np.log(self.prior(log_phi_initial)))
         pred = np.zeros((test_x.shape[0], ))
         var_pred = np.zeros((test_x.shape[0], ))
@@ -257,7 +259,7 @@ class RegressionQuadrature:
         print("Total Time elapsed: ", end-start)
         if verbose:
             self.visualise(pred, var_pred, test_y)
-        return rmse, ll, quad_time-start
+        return rmse, ll, quad_time-start, np.log(r_int)
 
     def wsabi(self, verbose=True):
         # Allocating number of maximum evaluations
@@ -285,21 +287,13 @@ class RegressionQuadrature:
             self.gpr.set_params(variance=map_model.rbf.variance, gaussian_noise=map_model.Gaussian_noise.variance)
 
         # Set prior mean to the MAP value
-        tmp_map = map_model.param_array
-        #map_vals = np.empty(len(tmp_map))
-        #map_vals[0] = tmp_map[2]
-        #map_vals[1] = tmp_map[1]
-        #map_vals[2] = tmp_map[0]
-        #map_vals[3] = tmp_map[3]
-
         # self.prior = Gaussian(mean=map_vals.reshape(-1), covariance=self.options['prior_variance'])
 
-        #log_phi_initial = np.log(tmp_map[1:-1]).reshape(1, -1)
         log_phi_initial = self.options['prior_mean'].reshape(1, -1)
         log_r_initial = np.sqrt(2 * np.exp(self.gpr.log_sample(
             phi=np.exp(log_phi_initial.reshape(-1))
         )[0]))
-        #print(log_r_initial)
+
         pred = np.zeros((test_x.shape[0], ))
         pred_var = np.zeros((test_x.shape[0], ))
 
@@ -314,26 +308,31 @@ class RegressionQuadrature:
 
         # Firstly, within the given allowance, compute an estimate of the model evidence. Model evidence is the common
         # denominator for all predictive distributions.
-        for i_a in range(budget):
+        for i_a in range(budget-1):
             log_phi_i = np.array(select_batch(log_r_model, batch_count, "Kriging Believer")).reshape(batch_count, -1)
-            log_r_i = self.gpr.log_sample(phi=np.exp(log_phi_i))[0]
-            log_r[i_a:i_a+batch_count] = log_r_i
-            log_phi[i_a:i_a+batch_count, :] = log_phi_i
-            log_r_model.update(log_phi_i, np.exp(log_r_i).reshape(1, -1))
-            print(np.exp(log_phi_i), log_r_i)
+            try:
+                log_r_i = self.gpr.log_sample(phi=np.exp(log_phi_i))[0]
+                log_r[i_a:i_a+batch_count] = log_r_i
+                log_phi[i_a:i_a+batch_count, :] = log_phi_i
+                log_r_model.update(log_phi_i, np.exp(log_r_i).reshape(1, -1))
+                # print(np.exp(log_phi_i), log_r_i)
+            except np.linalg.linalg.LinAlgError:
+                continue
         quad_time = time.time()
 
         max_log_r = max(log_r)
+        # Save the evaluations
+        # log_r_pd = pd.Series(log_r, name='lml')
+        # log_r_pd.to_csv('lml.csv')
+        # exit()
+
         r = np.exp(log_r - max_log_r)
         r_gp = GPy.models.GPRegression(log_phi[:1, :], np.sqrt(2 * r[0].reshape(1, 1)), kern)
         r_model = WarpedIntegrandModel(WsabiLGP(r_gp), self.prior)
         r_model.update(log_phi[1:, :], r[1:].reshape(-1, 1))
         r_gp.optimize()
         r_int = np.exp(np.log(r_model.integral_mean()[0]) + max_log_r) # Model evidence
-        log_r_int = np.log(r_int) # Model log-evidence
-
-        print("Estimate of model evidence: ", r_int,)
-        print("Model log-evidence ", log_r_int)
+        log_r_int = np.log(r_int)  # Model log-evidence
 
         # Visualise the model parameter posterior
         # neg_log_post = np.array((budget, )) # Negative log-posterior
@@ -406,13 +405,15 @@ class RegressionQuadrature:
         end = time.time()
         print("Active Sampling Time: ", quad_time-start)
         print("Total Time: ", end-start)
-        if verbose:
-            logging.info(pred, test_y)
-            self.visualise(pred, pred_var, test_y)
-        return rmse, ll, quad_time-start
 
-    def wsabi_bqr(self, verbose=True, compute_var=True):
-        from bayesquad.quadrature import compute_mean_gp_prod_gpy
+        print("Estimate of model evidence: ", r_int,)
+        print("Model log-evidence ", log_r_int)
+        if verbose:
+            self.visualise(pred, pred_var, test_y)
+        return rmse, ll, quad_time-start, log_r_int
+
+    def wsabi_bqr(self, verbose=True, compute_var=False):
+        from bayesquad.quadrature import compute_mean_gp_prod_gpy_2
 
         # Allocating number of maximum evaluations
         start = time.time()
@@ -442,6 +443,7 @@ class RegressionQuadrature:
         log_r_initial = np.sqrt(2 * np.exp(self.gpr.log_sample(
             phi=np.exp(log_phi_initial.reshape(-1))
         )[0]))
+
         pred = np.zeros((test_x.shape[0], ))
         pred_var = np.zeros((test_x.shape[0], ))
 
@@ -451,27 +453,35 @@ class RegressionQuadrature:
                             variance=1.,
                             lengthscale=1.)
 
-        r_gp = GPy.models.GPRegression(log_phi_initial, log_r_initial.reshape(1, -1), kern)
-        r_model = WarpedIntegrandModel(WsabiLGP(r_gp), self.prior)
+        log_r_gp = GPy.models.GPRegression(log_phi_initial, log_r_initial.reshape(1, -1), kern)
+        log_r_model = WarpedIntegrandModel(WsabiLGP(log_r_gp), self.prior)
 
         # Firstly, within the given allowance, compute an estimate of the model evidence. Model evidence is the common
         # denominator for all predictive distributions.
         for i_a in range(budget):
-            log_phi_i = np.array(select_batch(r_model, 1, "Kriging Believer")).reshape(1, -1)
-            log_r_i = self.gpr.log_sample(phi=np.exp(log_phi_i))[0]
-            log_r[i_a] = log_r_i
-            log_phi[i_a, :] = log_phi_i
-        quad_time = time.time()
+            log_phi_i = np.array(select_batch(log_r_model, 1, "Kriging Believer")).reshape(1, -1)
+            try:
+                log_r_i = self.gpr.log_sample(phi=np.exp(log_phi_i))[0]
+                log_r[i_a:i_a+1] = log_r_i
+                log_phi[i_a:i_a+1, :] = log_phi_i
+                # log_r_model.update(log_phi_i, np.exp(log_r_i).reshape(1, -1))
+                print(np.exp(log_phi_i), log_r_i)
+            except np.linalg.linalg.LinAlgError:
+                print('Error!')
+                continue
 
+
+        #max_log_r = np.max(log_r)
+        #r = np.exp(log_r - max_log_r)
         r = np.exp(log_r)
         r_gp = GPy.models.GPRegression(log_phi[:1, :], np.sqrt(2 * r[0].reshape(1, 1)), kern)
         r_model = WarpedIntegrandModel(WsabiLGP(r_gp), self.prior)
         r_model.update(log_phi[1:, :], r[1:].reshape(-1, 1))
         r_gp.optimize()
-        r_int = r_model.integral_mean()[0] # Model evidence
-
-        print("Estimate of model evidence: ", r_int,)
-        print("Model log-evidence ", np.log(r_int))
+        r_int_prime = r_model.integral_mean()[0] # Model evidence
+        #r_int = np.exp(np.log(r_int_prime) + max_log_r)
+        r_int = r_int_prime
+        print("Estimate of model evidence: ", r_int_prime,)
 
         # Secondly, compute and marginalise the predictive distribution for each individual points
         for i_x in range(test_x.shape[0]):
@@ -488,8 +498,8 @@ class RegressionQuadrature:
                 _, q[i_x, i_b], var[i_x, i_b] = self.gpr.log_sample(phi=np.exp(log_phi_i), x=test_x[i_x, :])
 
             # Enforce positivity in q
-            q_x = q[i_x, :]
-            var_x = var[i_x, :]
+            q_x = q[i_x, :].copy()
+            var_x = var[i_x, :].copy()
 
             q_min = np.min(q_x)
             if q_min < 0:
@@ -498,24 +508,59 @@ class RegressionQuadrature:
                 q_min = 0
 
             # Do the same exponentiation and rescaling trick for q
-            q_gp = GPy.models.GPRegression(log_phi[:1, :], np.sqrt(2 * q_x[0].reshape(1, 1)), kern)
+            q_gp = GPy.models.GPRegression(log_phi[:1, :], np.sqrt(2 * q_x[0].reshape(1, 1)),
+                                           GPy.kern.RBF(self.dimensions,
+                            variance=2.,
+                            lengthscale=2.))
             q_model = WarpedIntegrandModel(WsabiLGP(q_gp), self.prior)
             q_model.update(log_phi[1:, :], q_x[1:].reshape(-1, 1))
             q_gp.optimize()
+            #display(q_gp)
+            #q_int = q_model.integral_mean()[0]
 
-            rq_gp = GPy.models.GPRegression(log_phi, q_model.gp._gp.Y * r_model.gp._gp.Y, kern)
-            rq_gp.optimize()
 
             # Evaluate numerator
             alpha_q = q_model.gp._alpha
             alpha_r = r_model.gp._alpha
+            rq_gp = GPy.models.GPRegression(log_phi, q_model.gp._gp.Y * r_model.gp._gp.Y,
+                                            GPy.kern.RBF(self.dimensions,
+                                                           variance=2.,
+                                                           lengthscale=2.))
 
-            n = alpha_r * alpha_q + \
-                 0.5 * alpha_r * compute_mean_gp_prod_gpy(self.prior, q_model.gp._gp, q_model.gp._gp) + \
-                 0.5 * alpha_q * compute_mean_gp_prod_gpy(self.prior, r_model.gp._gp, r_model.gp._gp) + \
-                 0.25 * (compute_mean_gp_prod_gpy(self.prior, rq_gp, rq_gp)) + \
-                 q_min * r_int
-            pred[i_x] = n / r_int
+            rq_gp.optimize()
+
+            q_sq_gp = GPy.models.GPRegression(log_phi, (q_x - alpha_q).reshape(-1, 1),
+                                              GPy.kern.RBF(self.dimensions,
+                                                           variance=2.,
+                                                          lengthscale=1.))
+
+            q_sq_gp.optimize()
+
+            r_sq_gp = GPy.models.GPRegression(log_phi, (r-alpha_r).reshape(-1, 1),
+                                             GPy.kern.RBF(self.dimensions,
+                                                          variance=1.,
+                                                           lengthscale=1.)
+                                              )
+            r_sq_gp.optimize()
+
+            #display(rq_gp)
+            #display(q_sq_gp)
+            #print('---------------')
+            #display(r_sq_gp)
+            #display(q_sq_gp)
+            #print( compute_mean_gp_prod_gpy_2(self.prior, q_gp, q_gp))
+            #print( q_int )
+            #exit()
+            n1 = alpha_r * alpha_q
+            n2 = 0.5 * alpha_q * compute_mean_gp_prod_gpy_2(self.prior, r_gp, r_gp)
+            n3 = 0.5 * alpha_r * compute_mean_gp_prod_gpy_2(self.prior, q_gp, q_gp)
+            n4 = 0.25 * compute_mean_gp_prod_gpy_2(self.prior, rq_gp, rq_gp)
+            n = (n1 + n2 + n3 + n4)
+            res = n / r_int_prime + q_min
+            print('res', n1, n2, n3, n4, res)
+
+            pred[i_x] = res
+            #print('final', pred[i_x])
             if compute_var:
                 var_gp = GPy.models.GPRegression(log_phi[:1, :], np.sqrt(2 * var_x[0].reshape(1, 1)), kern)
                 var_model = WarpedIntegrandModel(WsabiLGP(var_gp), self.prior)
@@ -527,25 +572,27 @@ class RegressionQuadrature:
 
                 alpha_var = var_model.gp._alpha
                 var_num = alpha_r * alpha_var + \
-                          0.5 * alpha_r * compute_mean_gp_prod_gpy(self.prior, var_model.gp._gp, var_model.gp._gp) + \
-                          0.5 * alpha_var * compute_mean_gp_prod_gpy(self.prior, r_model.gp._gp, r_model.gp._gp) + \
-                          0.25 * (compute_mean_gp_prod_gpy(self.prior, rvar_gp, rvar_gp))
+                          0.5 * alpha_r * compute_mean_gp_prod_gpy_2(self.prior, var_model.gp._gp, var_model.gp._gp) + \
+                          0.5 * alpha_var * compute_mean_gp_prod_gpy_2(self.prior, r_model.gp._gp, r_model.gp._gp) + \
+                          0.25 * (compute_mean_gp_prod_gpy_2(self.prior, rvar_gp, rvar_gp))
                 pred_var[i_x] = var_num / r_int
             logging.info('Progress: '+str(i_x+1)+'/'+str(test_x.shape[0]))
 
         rmse = self.compute_rmse(pred, test_y)
         print('Root Mean Squared Error:', rmse)
+        ll, cs = None, None
         if compute_var:
             ll, cs = self.compute_ll_cs(pred, pred_var, test_y)
             print('Log-likelihood', ll)
             print('Calibration score', cs)
         end = time.time()
-        print("Active Sampling Time: ", quad_time-start)
         print("Total Time: ", end-start)
+
+        print("Estimate of model evidence: ", r_int,)
+        print("Model log-evidence ", np.log(r_int))
         if verbose:
-            logging.info(pred, test_y)
             self.visualise(pred, pred_var, test_y)
-        return rmse, None, quad_time-start
+        return rmse, ll, None, np.log(r_int)
     # ----- Evaluation Metric ---- #
 
     def reset_prior(self):
@@ -616,7 +663,9 @@ class RegressionQuadrature:
         if dim > 2:
             # For higher dimension, we only show the comparison between the test data and the ground truth
             xv = list(range(len(y_pred)))
+            plt.figure(1)
             plt.errorbar(xv, y_pred, yerr=np.sqrt(y_var), fmt='.', ecolor='r', capsize=2, label='Predictions +/- 1SD')
+            plt.figure(2)
             plt.plot(y_grd, ".", color='red', label='Ground Truth')
             plt.legend()
             plt.xlabel("Sample Number")
@@ -632,7 +681,9 @@ class RegressionQuadrature:
             x_train = self.gpr.X_grd[:max_idx]
             y_train = self.gpr.Y_grd[:max_idx]
 
+            plt.figure(1)
             plt.plot(x_train, y_train, color='grey', label='Training Data')
+            plt.figure(2)
             plt.plot(x_test, y_test, '.', color='r', markersize=6, label='Ground Truth')
             plt.errorbar(x_test.reshape(-1), y_pred.reshape(-1), yerr=np.sqrt(y_var),
                          color='b',
@@ -699,20 +750,31 @@ def sample_from_param_posterior(gpy_gp: GPy.core.gp, num_samples=1000, mc_iters=
 
 # ---- Performance evaluation --------- #
 def eval_perf(rq: RegressionQuadrature, method: str):
-    sample_n = [10, 15, 20, 30, 50, 75, 100, 120, 150, 200, 300]
-    res = np.empty((len(sample_n), 3))
+    sample_n = [120, 150, 200, 250]
+    res = np.zeros((len(sample_n), 4))
     for i in range(len(sample_n)):
-        if method == 'wsabi':
-            rq.options['wsabi_budget'] = sample_n[i]
-            res[i, 0], res[i, 1], res[i, 2] = rq.wsabi(verbose=False)
-        elif method == 'bq':
-            rq.options['naive_bq_budget'] = sample_n[i]
-            res[i, 0], res[i, 1], res[i, 2] = rq.bq(verbose=False)
-        elif method == 'mc':
-            rq.options['smc_budget'] = sample_n[i]
-            res[i, 0], res[i, 1] = rq.mc(verbose=False)
-        else:
-            raise NotImplemented()
-    df = pd.DataFrame(res, columns=['rmse', 'll', 'quad_time'])
+            print('**NUMBER OF SAMPLES**:', sample_n[i])
+            if method == 'wsabi':
+                rq.options['wsabi_budget'] = sample_n[i]
+                res[i, 0], res[i, 1], res[i, 2], res[i, 3] = rq.wsabi(verbose=False)
+            elif method == 'bqz':
+                rq.options['wsabi_budget'] = sample_n[i]
+                res[i, 0], res[i, 1], res[i, 2], res[i, 3] = rq.wsabi_bqr(verbose=False)
+            elif method == 'bq':
+                rq.options['naive_bq_budget'] = sample_n[i]
+                res[i, 0], res[i, 1], res[i, 2], res[i, 3] = rq.bq(verbose=False)
+            elif method == 'mc':
+                rq.options['smc_budget'] = sample_n[i]
+                res[i, 0], res[i, 1], res[i, 2], res[i, 3] = rq.mc(verbose=False)
+            elif method == 'map':
+                map_res = rq.maximum_a_posterior(verbose=False, max_iters=sample_n[i], num_restarts=2)
+                res[i, 0], res[i, 1] = map_res[1], map_res[2]
+                res[i, 2], res[i, 3] = np.nan, np.nan
+            else:
+                raise NotImplemented()
+
+
+    df = pd.DataFrame(res, columns=['rmse', 'll', 'quad_time', 'evidence'])
+    df.index = sample_n
     df.to_csv(method+'_perf.csv')
     logging.info(method+' evaluation completed')

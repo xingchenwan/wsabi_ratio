@@ -248,7 +248,7 @@ class RBFGPRegression(Functions):
                 plt.title(self.col_headers[i])
             plt.show()
 
-        np.random.seed(4)
+        np.random.seed(1)
         np.random.shuffle(raw_data)
 
         X_grd = raw_data[:, :-1]

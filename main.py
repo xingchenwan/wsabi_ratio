@@ -3,34 +3,36 @@ matplotlib.use("TkAgg")
 # This is to prevent a macOS bug with matplotlib
 from ratio.test_1d import *
 import matplotlib.pyplot as plt
-from ratio.naive_quadratures import NaiveWSABI, NaiveBQ
+from ratio.quadrature_1d import WsabiNBQ, NBQ, WsabiBQZ
 from bayesquad.priors import Gaussian
 from ratio.functions import *
 from ratio.monte_carlo import MonteCarlo
 from ratio.regression_quadrature import *
 from ratio.posterior import ParamPosterior
 from ratio.posterior_mc_inference import PosteriorMCSampler
+matplotlib.rcParams.update({'font.size': 12})
 
 
 def one_d_example():
     r = GaussMixture(means=[-1, 2], covariances=[0.7, 2], weights=[0.1, 0.2])
+    #r = GaussMixture(means=[0], covariances=[2], weights=[1])
 
     q = GaussMixture([0.5, 1.5, -1.5, -0.3, 0.2], [100, 1, 0.4, 0.2, 1], weights=[3, 0.5, 0.5, 0.2, -0.1])
-    prior = Gaussian(mean=np.array([[0]]), covariance=np.array([[1]]))
+    prior = Gaussian(mean=np.array([[0]]), covariance=np.array([[4.]]))
 
-    prediction = predictive_integral(r, q, prior_mean=0, prior_var=1)
-    evidence = evidence_integral(r, prior_mean=0, prior_var=1)
+    prediction = predictive_integral(r, q, prior_mean=0, prior_var=4.)
+    evidence = evidence_integral(r, prior_mean=0, prior_var=4.)
     print(prediction, evidence, prediction/evidence)
     num, den, ratio = approx_integrals(prior, q, r)
 
-    naive_wsabi = NaiveWSABI(r, q, prior, num_batches=200, display_step=100, plot_iterations=True,
+    naive_wsabi = WsabiNBQ(r, q, prior, budget=100, display_step=10, plot_iterations=True,
                              true_prediction_integral=num, true_evidence_integral=den)
     naive_wsabi.quadrature()
     naive_wsabi.plot_result()
     plt.show()
-
+    exit()
     mcmc = MonteCarlo(r, q, prior, true_prediction_integral=num, true_evidence_integral=den,
-                      num_batches=203, plot_iterations=True, display_step=50, )
+                      budget=1000, plot_iterations=False, display_step=50, )
     mcmc.quadrature()
     mcmc.plot_result()
     plt.show()
@@ -45,16 +47,14 @@ def two_d_example():
 
 def yacht():
     regression_model = RBFGPRegression()
-    rq = RegressionQuadrature(regression_model)
+    rq = RegressionQuadrature(regression_model, wsabi_budget=15)
     # rq.maximum_a_posterior(num_restarts=1, max_iters=1000)
-
-    #eval_perf(rq, 'wsabi')
+    #rq.mc()
     #exit()
-    #rq.wsabi()
+    #eval_perf(rq, 'bqz')
     rq.wsabi_bqr()
     #rq.bq()
     #rq.bq()
-    #eval_wsabi_perf(rq)
 
 
 def sotonmet():
@@ -68,7 +68,7 @@ def sotonmet():
     # rq.options['prior_mean'] = np.array(np.log(optimised_model.param_array)).reshape(-1)
     # rq.reset_prior()
     # rq.wsabi()
-    eval_perf(rq, 'bq')
+    eval_perf(rq, 'bqz')
 
 
 def svm():

@@ -2,7 +2,7 @@
 # An implementation of Monte Carlo Quadrature (Slice Sampling)
 
 import numpy as np
-from ratio.naive_quadratures import NaiveMethods
+from ratio.quadrature_1d import Quadrature1D
 from ratio.functions import Functions
 from bayesquad.priors import Prior
 from typing import Union, Tuple
@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 
-class MonteCarlo(NaiveMethods):
+class MonteCarlo(Quadrature1D):
     """
     An implementation of the multidimensional Slice Sampling Monte Carlo method - proposed by Neal 2003
     """
@@ -19,10 +19,10 @@ class MonteCarlo(NaiveMethods):
                  **options):
         super(MonteCarlo, self).__init__(r, q, p, true_prediction_integral, true_evidence_integral)
         self.options = self._unpack_options(**options)
-        self.sample_count = self.options['num_batches']
+        self.sample_count = self.options['budget']
         self.widths = self.options['width']
         self.iterations = 0
-        self.results = np.zeros(self.options['num_batches'])
+        self.results = np.zeros(self.options['budget'])
         # Set up a container for all the samples
         self.selected_points = np.zeros((self.sample_count, self.dim))
         self.evaluated_points = []
@@ -100,7 +100,7 @@ class MonteCarlo(NaiveMethods):
         :return: float - the final evaluated integral ratio at the last evaluation step
         """
         x = self.options['initial_point']
-        for i in range(self.options['num_batches']):
+        for i in range(self.options['budget']):
             # Draw a sample from the parameter posterior
             x_prime = self._batch_iterate(x)
             self.selected_points[i, :] = x_prime.copy()
@@ -127,7 +127,7 @@ class MonteCarlo(NaiveMethods):
         return self.results[-1]
 
     def _unpack_options(self,
-                        num_batches: int = 1000,
+                        budget: int = 1000,
                         width: Union[float, np.ndarray] = 1.,
                         step_out: bool = True,
                         initial_point: np.ndarray = None,
@@ -137,7 +137,7 @@ class MonteCarlo(NaiveMethods):
                         ) -> dict:
         """
         Unpack optional keyword arguments supplied
-        :param num_batches: Number of samples in the Monte Carlo method
+        :param budget: Number of samples in the Monte Carlo method
         :param width: the size of "jump" between successive steps of MCMC
         :param step_out: as per Neal's paper (2003) on improving slice sampling
         :param initial_point: Initial sampling point of the method. Default value is the origin in the d-dimensional
@@ -156,9 +156,9 @@ class MonteCarlo(NaiveMethods):
         else:
             assert len(width) == self.dim
         if burn_in is None:
-            burn_in = min(50, int(num_batches * 0.1))
+            burn_in = min(50, int(budget * 0.1))
         return {
-            'num_batches': num_batches,
+            'budget': budget,
             'width': width,
             'step_out': step_out,
             'initial_point': initial_point,

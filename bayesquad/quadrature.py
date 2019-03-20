@@ -3,7 +3,9 @@
 # the integrand model of a vanilla (non-WSABI) Bayesian Quadrature method
 
 from typing import Tuple, Union
-
+import matplotlib
+matplotlib.use("TkAgg")
+import matplotlib.pyplot as plt
 import numpy as np
 from GPy.kern import Kern, RBF
 # from multimethod import multimethod
@@ -141,11 +143,10 @@ class IntegrandModel:
         if y is not None:
             self.gp.Y = y
 
-
     def integral_mean(self,) -> float:
         """Compute the mean of the integral of the function under this model."""
         if isinstance(self.prior, Gaussian) and isinstance(self.gp.kernel, RBF):
-            return self._compute_mean2(self.prior, self.gp, self.gp.kernel)
+            return self._compute_mean(self.prior, self.gp, self.gp.kernel)
         elif isinstance(self.prior, Gaussian1D) and isinstance(self.gp.kernel, RBF):
             return self._compute_mean(self.prior, self.gp, self.gp.kernel)
         else:
@@ -153,11 +154,11 @@ class IntegrandModel:
 
     @staticmethod
     @abstractmethod
-    def _compute_mean(prior, gp, kernel, log_transform=False) -> float: pass
+    def _compute_mean(prior, gp, kernel) -> float: pass
 
     @staticmethod
     @abstractmethod
-    def _compute_mean2(prior, gp, kernel, log_transform=False) -> float: pass
+    def _compute_mean2(prior, gp, kernel) -> float: pass
 
     def fantasise(self, x, y):
         self.gp.fantasise(x, y)
@@ -211,17 +212,14 @@ class WarpedIntegrandModel(IntegrandModel):
 
     @staticmethod
     def _compute_mean(prior: Gaussian, gp: WarpedGP, kernel: RBF,
-                      log_transform=False):
+                      ):
         dimensions = gp.dimensions
 
         alpha = gp._alpha
         kernel_lengthscale = kernel.lengthscale.values[0]
         kernel_variance = kernel.variance.values[0]
-
+        #print(kernel_lengthscale, kernel_variance)
         X_D = gp._gp.X
-
-        if log_transform:
-            raise NotImplementedError()
 
         mu = prior.mean
         sigma = prior.covariance
@@ -232,13 +230,20 @@ class WarpedIntegrandModel(IntegrandModel):
 
         L = np.exp(
             -(np.linalg.norm(X_D[:, newaxis, :] - X_D[newaxis, :, :], axis=2) ** 2) / (4 * kernel_lengthscale ** 2))
+        #print('L1', L)
         L = kernel_variance ** 2 * L
+        #print('L2', L)
         L = np.linalg.det(2 * np.pi * sigma) ** (-1 / 2) * L
+        #print('L3',L)
 
         C = sigma_inv + 2 * np.eye(dimensions) / kernel_lengthscale ** 2
 
         C_inv = np.linalg.inv(C)
-        gamma_part = 2 * nu / kernel_lengthscale ** 2 + (sigma_inv @ mu)[newaxis, newaxis, :]
+
+        if dimensions == 1:
+            gamma_part = 2 * nu / kernel_lengthscale ** 2 + (sigma_inv @ mu)[newaxis, :]
+        else:
+            gamma_part = 2 * nu / kernel_lengthscale ** 2 + (sigma_inv @ mu)[newaxis, newaxis, :]
         gamma = np.einsum('kl,ijl->ijk', C_inv, gamma_part)
 
         k_1 = 2 * np.einsum('ijk,ijk->ij', nu, nu) / kernel_lengthscale ** 2
@@ -251,104 +256,98 @@ class WarpedIntegrandModel(IntegrandModel):
 
         return alpha + (np.linalg.det(2 * np.pi * np.linalg.inv(C)) ** 0.5) / 2 * (A.T @ (K * L) @ A), None, None
 
-    @staticmethod
-    def _compute_mean2(prior: Gaussian, gp: WarpedGP, kernel: RBF,):
-        """Square of a gaussian process"""
-        alpha = gp._alpha
-        return alpha + 0.5 * compute_mean_gp_prod(prior, gp, gp)
 
-
-def compute_mean_gp_prod(prior: Gaussian, r: WarpedGP, q: WarpedGP):
-    """
-    Xingchen Wan Addition - 9 Mar 2019
-    :param prior:
-    :param r:
-    :param q:
-    :return:
-    """
-    from scipy.stats import multivariate_normal
-    X_r = r._gp.X
-    X_q = q._gp.X
-    assert X_q.shape[0] == X_r.shape[0]
-
-    mu = prior.mean
-    sigma = prior.covariance
-
+def compute_mean_gp_prod2(prior: Gaussian, r: WarpedGP, q: WarpedGP):
     dimensions = r.dimensions
-    N = X_r.shape[0]
-    assert dimensions == q.dimensions, "Dimensionality mismatch between r and q!"
+    assert r.dimensions == q.dimensions
+    assert r._gp.X == q._gp.X
 
-    # Kernel lengthscales and variances
-    h_r = r._gp.kernel.variance.values[0]
-    h_q = q._gp.kernel.variance.values[0]
-    W_q = q._gp.kernel.lengthscale.values[0] * np.eye(dimensions)
-    W_r = r._gp.kernel.lengthscale.values[0] * np.eye(dimensions)
+    W_q = q.kernel.lengthscale.values[0]
+    h_q = q.kernel.variance.values[0]
+    W_r = r.kernel.lengthscale.values[0]
+    h_r = r.kernel.variance.values[0]
 
-    # Woodbury vectors
-    q_wv_t = np.transpose(q._gp.posterior.woodbury_vector)
-    r_wv = r._gp.posterior.woodbury_vector
-
-    # Construct the normal pdf
-    norm_pdf_mean = np.tile(mu, 2)
-    norm_pdf_cov = np.block([
-        [sigma + W_q, sigma],
-        [sigma, sigma + W_r]
-    ])
-    norm_pdf = multivariate_normal(mean=norm_pdf_mean, cov=norm_pdf_cov)
-    query_grid = np.empty((N**2, dimensions*2))
-    for i in range(N):
-        for j in range(N):
-            query_grid[i*N+j, :] = np.concatenate([X_q[i, :], X_r[j, :]])
-    nu = norm_pdf.pdf(query_grid)
-    nu = nu.reshape(N, N) * (h_r * h_q) ** 2
-    return q_wv_t @ nu @ r_wv
-
-
-def compute_mean_gp_prod_gpy(prior: Gaussian, r: GPy.core.gp, q: GPy.core.gp):
-    """
-    Xingchen Wan Addition - 9 Mar 2019
-    :param prior:
-    :param r:
-    :param q:
-    :return:
-    """
-    from scipy.stats import multivariate_normal
-    X_r = r.X
-    X_q = q.X
-    assert X_q.shape[0] == X_r.shape[0]
+    X_D = r._gp.X
 
     mu = prior.mean
     sigma = prior.covariance
+    sigma_inv = prior.precision
 
-    N, D = X_r.shape[0], X_r.shape[1]
-    assert D == X_q.shape[1], "Dimensionality mismatch between r and q!"
-    assert isinstance(r.kern, RBF), "quadrature kernel must be RBF!"
-    assert isinstance(q.kern, RBF), "quadrature kernel must be RBF!"
+    nu = (X_D[:, newaxis, :] + X_D[newaxis, :, :]) / 2
+    A_q = q._gp.posterior.woodbury_vector
+    A_r = r._gp.posterior.woodbury_vector
 
-    # Kernel lengthscales and variances
-    h_r = r.kern.variance.values[0]
+    L = np.exp(
+        -(np.linalg.norm(X_D[:, newaxis, :] - X_D[newaxis, :, :], axis=2) ** 2) / (4 * W_q * W_r))
+    L = (h_q * h_r) * L
+    L = np.linalg.det(2 * np.pi * sigma) ** (-1 / 2) * L
+
+    C = sigma_inv + 2 * np.eye(dimensions) / (W_q * W_r)
+
+    C_inv = np.linalg.inv(C)
+    if dimensions == 1:
+        gamma_part = 2 * nu / (W_q * W_r) + (sigma_inv @ mu)[newaxis, :]
+    else:
+        gamma_part = 2 * nu / (W_q * W_r)+ (sigma_inv @ mu)[newaxis, newaxis, :]
+    gamma = np.einsum('kl,ijl->ijk', C_inv, gamma_part)
+
+    k_1 = 2 * np.einsum('ijk,ijk->ij', nu, nu) / (W_q * W_r)
+    k_2 = mu.T @ sigma_inv @ mu
+    k_3 = np.einsum('ijk,kl,ijl->ij', gamma, C, gamma)
+
+    k = k_1 + k_2 - k_3
+
+    K = np.exp(-k / 2)
+
+    return (np.linalg.det(2 * np.pi * np.linalg.inv(C)) ** 0.5) / 2 * (A_q.T @ (K * L) @ A_r), None, None
+
+
+def compute_mean_gp_prod_gpy_2(prior: Gaussian, r: GPy.core.gp, q: GPy.core.gp):
+    dimensions = r.input_dim
+    assert r.input_dim == q.input_dim
+
+    W_q = q.kern.lengthscale.values[0]
     h_q = q.kern.variance.values[0]
-    W_q = q.kern.lengthscale.values[0] * np.eye(D)
-    W_r = r.kern.lengthscale.values[0] * np.eye(D)
+    W_r = r.kern.lengthscale.values[0]
+    h_r = r.kern.variance.values[0]
+    #print(W_q, h_q, W_r, h_r)
+    X_D = r.X
 
-    # Woodbury vectors
-    q_wv_t = np.transpose(q.posterior.woodbury_vector)
-    r_wv = r.posterior.woodbury_vector
+    mu = prior.mean
+    sigma = prior.covariance
+    sigma_inv = prior.precision
 
-    # Construct the normal pdf
-    norm_pdf_mean = np.tile(mu, 2)
-    norm_pdf_cov = np.block([
-        [sigma + W_q, sigma],
-        [sigma, sigma + W_r]
-    ])
-    norm_pdf = multivariate_normal(mean=norm_pdf_mean, cov=norm_pdf_cov)
-    query_grid = np.empty((N**2, D*2))
-    for i in range(N):
-        for j in range(N):
-            query_grid[i*N+j, :] = np.concatenate([X_q[i, :], X_r[j, :]])
-    nu = norm_pdf.pdf(query_grid)
-    nu = nu.reshape(N, N) * (h_r * h_q) ** 2
-    return q_wv_t @ nu @ r_wv
+    nu = (X_D[:, newaxis, :] + X_D[newaxis, :, :]) / 2
+    A_q = q.posterior.woodbury_vector
+    A_r = r.posterior.woodbury_vector
+
+    L = np.exp(
+        -(np.linalg.norm(X_D[:, newaxis, :] - X_D[newaxis, :, :], axis=2) ** 2) / (4 * W_q * W_r))
+    #print('L1', L)
+    L = (h_q * h_r) * L
+    #print('L2', L)
+    L = np.linalg.det(2 * np.pi * sigma) ** (-1 / 2) * L
+    #print('L3', L)
+
+    C = sigma_inv + 2 * np.eye(dimensions) / (W_q * W_r)
+
+    C_inv = np.linalg.inv(C)
+    if dimensions == 1:
+        gamma_part = 2 * nu / (W_q * W_r) + (sigma_inv @ mu)[newaxis, :]
+    else:
+        gamma_part = 2 * nu / (W_q * W_r) + (sigma_inv @ mu)[newaxis, newaxis, :]
+    gamma = np.einsum('kl,ijl->ijk', C_inv, gamma_part)
+
+    k_1 = 2 * np.einsum('ijk,ijk->ij', nu, nu) / (W_q * W_r)
+    k_2 = mu.T @ sigma_inv @ mu
+    k_3 = np.einsum('ijk,kl,ijl->ij', gamma, C, gamma)
+
+    k = k_1 + k_2 - k_3
+
+    K = np.exp(-k / 2)
+
+    return (np.linalg.det(2 * np.pi * np.linalg.inv(C)) ** 0.5) * (A_q.T @ (K * L) @ A_r)
+
 
 
 class OriginalIntegrandModel(IntegrandModel):

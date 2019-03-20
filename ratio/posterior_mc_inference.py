@@ -39,9 +39,9 @@ class PosteriorMCSampler:
         # Assign prior - up to this point the project uses LogGaussian prior (0, 2) for all hyperparameters, so I will
         # leave this hard-coded for now todo: change the hard-coding!
         # self.gpflow_gp.kern.period.prior = gpflow.priors.LogNormal(0, 1000)
-        self.gpflow_gp.kern.lengthscales.prior = gpflow.priors.LogNormal(0, 1000)
-        self.gpflow_gp.kern.variance.prior = gpflow.priors.LogNormal(0, 1000)
-        self.gpflow_gp.likelihood.variance.prior = gpflow.priors.LogNormal(0, 1000)
+        self.gpflow_gp.kern.lengthscales.prior = gpflow.priors.LogNormal(0, 2)
+        self.gpflow_gp.kern.variance.prior = gpflow.priors.LogNormal(0, 2)
+        self.gpflow_gp.likelihood.variance.prior = gpflow.priors.LogNormal(0, 2)
         self.gpflow_gp.compile()
 
         mc = gpflow.train.HMC()
