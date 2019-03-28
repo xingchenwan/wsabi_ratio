@@ -37,7 +37,7 @@ class ClassificationQuadrature:
         self.prior = Gaussian(mean=self.options['prior_mean'].reshape(-1),
                               covariance=self.options['prior_variance'])
 
-    def maximum_likelihood(self, mode='mle'):
+    def maximum_likelihood(self, mode='map'):
         """
         The more Bayesian way of model selection - compute the maximum likelihood estimate
         :return:
@@ -51,7 +51,7 @@ class ClassificationQuadrature:
 
         self.plot_log_lik()
         x_test, y_test = self.model.X_test, self.model.Y_test
-        log_phi0 = np.array([0.]*self.dimensions)
+        log_phi0 = self.prior.mean.reshape(-1, 1)
 
         if mode == 'mle':
             phi_mle = minimize(neg_log_lik, log_phi0, options={'eps': 0.1,}).x
@@ -76,7 +76,15 @@ class ClassificationQuadrature:
         logging.info("Recall: "+str(recall))
         logging.info("F1 score: "+str(f1))
 
-    def grid_search(self, bounds=((-5, 5), (-7, 0)), n_points=25, objective='precision'):
+        labels = labels.reshape(-1)
+        pred = y_pred.reshape(-1)
+        test_y = y_test.reshape(-1)
+        res = np.vstack([labels, pred, test_y]).T
+        res = pd.DataFrame(res, columns=['pred', 'pred_prob', 'labels'])
+        res.to_csv('svm_mle.csv')
+
+
+    def grid_search(self, bounds=((-10, 10), (-10, 10)), n_points=10, objective='precision'):
         """
         The frequentist approach to SVM parameter search - grid search the hyperparameters...
         :return:
@@ -206,8 +214,8 @@ class ClassificationQuadrature:
 
         # Set prior mean to the MAP value
 
-        log_phi_initial = np.zeros(self.dimensions).reshape(1, -1)
-        # log_phi_initial = self.options['prior_mean'].reshape(1, -1)
+        # log_phi_initial = np.zeros(self.dimensions).reshape(1, -1)
+        log_phi_initial = self.options['prior_mean'].reshape(1, -1)
         log_r_initial = np.sqrt(2 * np.exp(self.model.log_sample(phi=np.exp(log_phi_initial).reshape(-1))[0]))
         # print(log_r_initial)
         pred = np.zeros((test_x.shape[0],))
@@ -215,8 +223,8 @@ class ClassificationQuadrature:
         # Setting up kernel - Note we only marginalise over the lengthscale terms, other hyperparameters are set to the
         # MAP values.
         kern = GPy.kern.RBF(self.dimensions,
-                            variance=1.,
-                            lengthscale=1.)
+                            variance=.1, #0.1
+                            lengthscale=.1) #0.1
 
         log_r_gp = GPy.models.GPRegression(log_phi_initial, log_r_initial.reshape(1, -1), kern)
         log_r_model = WarpedIntegrandModel(WsabiLGP(log_r_gp), self.prior)
@@ -307,36 +315,57 @@ class ClassificationQuadrature:
         end = time.time()
         print("Active Sampling Time: ", quad_time - start)
         print("Total Time: ", end - start)
+
+        # Save the results
+        labels = labels.reshape(-1)
+        pred = pred.reshape(-1)
+        test_y = test_y.reshape(-1)
+        res = np.vstack([labels, pred, test_y]).T
+        res = pd.DataFrame(res, columns=['pred', 'pred_prob', 'labels'])
+        res.to_csv('svm_wsabi.csv')
         return accuracy, precision, recall, f1
 
     def plot_log_lik(self):
+        from matplotlib import cm
+
         if self.dimensions > 2:
             logging.warning("Visualisation is not available for higher dimension data!")
             return
-        x = np.linspace(-5, 3, 30)
-        y = np.linspace(-7, 2, 30)
+        xlow = self.prior.mean[0] - 10
+        xhigh = self.prior.mean[0] + 10
+        ylow = self.prior.mean[1] - 10
+        yhigh = self.prior.mean[1] + 10
+        x = np.linspace(xlow, xhigh, 30)
+        y = np.linspace(ylow, yhigh, 30)
         xv = np.stack(np.meshgrid(x, y, indexing='ij'), axis=-1).reshape(-1, 2)
         z = np.empty(xv.shape[0])
         for i in range(xv.shape[0]):
-            z[i] = -self.model.log_sample(np.exp(xv[i, :]))[0]
+            tmp = -self.model.log_sample(np.exp(xv[i, :]))[0]
+            z[i] = tmp
         X, Y = np.meshgrid(x, y)
         Z = griddata(xv, z, (X, Y), method='cubic')
-        fig = plt.figure()
+        fig = plt.figure(figsize=(6, 6))
         ax = fig.gca(projection='3d')
         _ = ax.plot_wireframe(X, Y, Z)
-        ax.set_xlabel('log(C)')
-        ax.set_ylabel('log(gamma)')
-        ax.set_zlabel('Log-likelihood')
+        ax.set_xlabel('$log(C)$')
+        ax.set_ylabel('$log(\gamma)$')
+        ax.set_zlabel('Negative Log-likelihood')
+
+        ax_lims = [ax.get_xlim()[0], ax.get_ylim()[0], ax.get_zlim()[0]]
+        #cset = ax.contour(X, Y, Z, zdir='x', offset=ax_lims[0], cmap=cm.coolwarm)
+        #cset = ax.contour(X, Y, Z, zdir='y', offset=ax_lims[1], cmap=cm.coolwarm)
+        cset = ax.contour(X, Y, Z, zdir='z', offset=ax_lims[2], cmap=cm.coolwarm)
+
         plt.show()
 
     def _unpack_options(self,
-                        prior_mean: Union[float, np.ndarray] = 0.,
-                        prior_variance: Union[float, np.ndarray] = 100.,
+                        prior_mean: Union[float, np.ndarray] = np.array([0, 0]), #np.array([7, -10])
+                        prior_variance: Union[float, np.ndarray] = 10 * np.eye(2),
                         smc_budget: int = 100,
                         naive_bq_budget: int = 100,
                         naive_bq_kern_lengthscale: float = 1.,
                         naive_bq_kern_variance: float = 1.,
-                        wsabi_budget: int = 100,
+                        wsabi_budget: int = 200,
                         posterior_range=(-5., 5.),
                         # The axis ranges between which the posterior samples are drawn
                         posterior_eps: float = 0.02,

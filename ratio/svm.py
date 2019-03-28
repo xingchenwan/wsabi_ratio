@@ -19,14 +19,12 @@ class SVMClassification(Functions):
     """
     def __init__(self,
                  dataset='cancer',
-                 file_path='/Users/xingchenwan/Dropbox/4YP/Codes/wsabi_ratio/data/breast-cancer-wisconsin.data.txt',
                  n_train=100,
                  n_test=30,
-                 param_dim=4,
+                 param_dim=2,
                  n_partition=5):
         super(SVMClassification, self).__init__()
         self.data_set = dataset
-        self.file_path = file_path
         self.n_train = n_train
         self.n_test = n_test
         self.n_partition = n_partition  # number of partition in the splitting train data part
@@ -59,14 +57,45 @@ class SVMClassification(Functions):
         if self.data_set == 'cancer':
             self._load_data_cancer()
         elif self.data_set == 'heart':
-            raise self._load_data_heart()
+            self._load_data_heart()
         else:
             raise ValueError("The dataset keyword is not specified")
 
     # Load data functions for different data sets
     def _load_data_heart(self):
         # load_data function is tailored to Heart Disease Data Set.
-        pass
+        random.seed(1)
+        np.random.seed(1)
+        raw_data = pd.read_csv('/Users/xingchenwan/Dropbox/4YP/Codes/wsabi_ratio/data/heart.csv', )
+        a = pd.get_dummies(raw_data['cp'], prefix="cp")
+        b = pd.get_dummies(raw_data['thal'], prefix="thal")
+        c = pd.get_dummies(raw_data['slope'], prefix="slope")
+
+        frames = [raw_data, a, b, c]
+        df = pd.concat(frames, axis=1)
+        df = df.drop(columns=['cp', 'thal', 'slope'])
+
+        df = df.values
+        np.random.shuffle(df)
+        X = df[:, :-1]  # From second column to the penultimate column is the feature vector
+        Y = df[:, -1]  # The last column is the label column
+        # Split into train and test data
+        pts = int(np.minimum(self.n_test+self.n_train, Y.shape[0]))
+        idx = np.array(random.sample(range(Y.shape[0]), pts))
+        X = X[idx, :]
+        Y = Y[idx]
+        #print(X, Y)
+        self.X_test = X[:self.n_test, :]
+        self.Y_test = Y[:self.n_test].reshape(-1, 1)
+        self.X_train = X[self.n_test:, :]
+        self.Y_train = Y[self.n_test:].reshape(-1, 1)
+        logging.info("Training set length "+str(self.X_train.shape[0]))
+        logging.info("Test set length "+str(self.X_test.shape[0]))
+        print('Summary of Input Data')
+        print('Total N:', X.shape[0])
+        print('+', Y[Y == 1].shape[0], Y[Y == 1].shape[0] / X.shape[0])
+        print('-', Y[Y == 0].shape[0], Y[Y == 0].shape[0] / X.shape[0])
+        print('Dimension', X.shape[1])
 
     def _load_data_cancer(self):
         # This load_data function is currently tailored to the Wisconsin Cancer dataset, to use it for another dataset,
@@ -74,7 +103,9 @@ class SVMClassification(Functions):
         random.seed(1)
         np.random.seed(1)
 
-        raw_data = pd.read_csv(filepath_or_buffer=self.file_path, header=None,)
+        raw_data = pd.read_csv(
+            filepath_or_buffer='/Users/xingchenwan/Dropbox/4YP/Codes/wsabi_ratio/data/breast-cancer-wisconsin.data.txt',
+            header=None,)
         raw_data = raw_data.iloc[:, 2:]
         raw_data.iloc[:, -1] = raw_data.iloc[:, -1].replace([4, 2], [1, 0])
         raw_data = raw_data.values
@@ -96,6 +127,11 @@ class SVMClassification(Functions):
         self.Y_train = Y[self.n_test:].reshape(-1, 1)
         logging.info("Training set length "+str(self.X_train.shape[0]))
         logging.info("Test set length "+str(self.X_test.shape[0]))
+        print('Summary of Input Data')
+        print('Total N:', X.shape[0])
+        print('+', Y[Y == 1].shape[0], Y[Y == 1].shape[0] / X.shape[0])
+        print('-', Y[Y == 0].shape[0], Y[Y == 0].shape[0] / X.shape[0])
+        print('Dimension', X.shape[1])
 
     def compute_n_fold_log_lik(self, c, gamma, alpha=None, beta=None):
         """
@@ -222,6 +258,8 @@ class SVMClassification(Functions):
         clf.fit(self.X_train, self.Y_train)
         # print('Best parameter set:', clf.best_params_)
         y_pred = clf.predict(self.X_test)
+        print(y_pred.reshape(-1))
+        print(self.Y_test.reshape(-1))
         log_lik = self.compute_n_fold_log_lik(clf.best_params_['C'], clf.best_params_['gamma'])
         return log_lik, (np.log(clf.best_params_['C']), np.log(clf.best_params_['gamma'])), \
                self.score(y_pred, self.Y_test)

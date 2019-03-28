@@ -47,39 +47,41 @@ def two_d_example():
 
 def yacht():
     regression_model = RBFGPRegression()
-    rq = RegressionQuadrature(regression_model, wsabi_budget=15)
-    # rq.maximum_a_posterior(num_restarts=1, max_iters=1000)
+    rq = RegressionQuadrature(regression_model, wsabi_budget=150)
+    rq.maximum_a_posterior(num_restarts=1, max_iters=1000)
     #rq.mc()
     #exit()
     #eval_perf(rq, 'bqz')
-    rq.wsabi_bqr()
+    #rq.wsabi()
     #rq.bq()
     #rq.bq()
 
 
 def sotonmet():
-    regression_model = PeriodicGPRegression(selected_cols=['Tide height (m)', 'True tide height (m)'],
-                                            n_test=15, train_ratio=0.2)
-    rq = RegressionQuadrature(regression_model)
+    import theano
+    regression_model = PeriodicGPRegression(selected_cols=['True tide height (m)', 'True tide height (m)'], train_ratio=0.8)
+    rq = RegressionQuadrature(regression_model, wsabi_budget=100, naive_bq_budget=300)
     # t = PosteriorMCSampler(rq.gpr.model).hmc(num_iters=1000, mode='gpflow')
     # t.plot()
     # plt.show()
-    # optimised_model, _, _ = rq.maximum_a_posterior(num_restarts=1, max_iters=1000, verbose=True)
+    # optimised_model, _, _ = rq.maximum_a_posterior(num_restarts=10, max_iters=1000, verbose=True)
+
+    rq.bq()
     # rq.options['prior_mean'] = np.array(np.log(optimised_model.param_array)).reshape(-1)
     # rq.reset_prior()
-    # rq.wsabi()
-    eval_perf(rq, 'bqz')
+    #rq.bq()
 
 
 def svm():
     from ratio.svm import SVMClassification
     from ratio.classification_quadrature import ClassificationQuadrature
-    svm = SVMClassification(n_train=100, n_test=500)
-    cq = ClassificationQuadrature(svm,  wsabi_budget=200)
+    svm = SVMClassification(n_train=100, n_test=500, dataset='cancer')
+    cq = ClassificationQuadrature(svm,  wsabi_budget=100)
     cq.grid_search()
     #
-    #cq.maximum_likelihood()
-    #cq.wsabi(verbose=True,)
+    cq.maximum_likelihood()
+    #plt.show()
+    cq.wsabi(verbose=True,)
 
 
 def changepoint():
@@ -103,6 +105,18 @@ def plot_kernel():
     plt.plot(samples, np.squeeze(res))
     plt.show()
 
+def platt():
+    plt.figure(1, figsize=(8,4))
+    alpha = np.arange(-6, 6.1, 0.1)
+    beta = np.arange(-4, 4.1, 2)
+    for b in range(beta.shape[0]):
+        y = 1 / (1 + np.exp(alpha + beta[b]))
+        plt.plot(alpha, y,label='$\\beta = $'+str(beta[b]))
+    plt.xlabel('$\\alpha$')
+    plt.ylabel("$\\sigma_{\\alpha, \\beta}(f(x))$")
+    plt.legend()
+    plt.show()
+
 if __name__ == "__main__":
     np.set_printoptions(threshold=1000)
-    yacht()
+    sotonmet()

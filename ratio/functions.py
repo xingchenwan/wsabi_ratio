@@ -400,17 +400,49 @@ class PeriodicGPRegression(Functions):
         self.n_test = n_test
 
         #Initialise variables
-        self.X_train, self.Y_train, self.X_test, self.Y_test, self.X_grd, self.Y_grd \
-            = self.load_univariate_series(test_col=selected_cols[0], grd_truth_col=selected_cols[1])
+        #self.X_train, self.Y_train, self.X_test, self.Y_test, self.X_grd, self.Y_grd \
+        #    = self.load_univariate_series(test_col=selected_cols[0], grd_truth_col=selected_cols[1])
 
+        self.X_train, self.Y_train, self.X_test, self.Y_test, self.X_grd, self.Y_grd \
+            = self.load_data2(test_col=selected_cols[0])
         self.dimensions = self.X_train.shape[1]
         # Initial hyperparameter estimate - will be used in reset
-        self.initial_lengthscale = 0.2
-        self.initial_variance = 0.2
-        self.initial_period = 1.
+        self.initial_lengthscale = 1
+        self.initial_variance = 1
+        self.initial_period = 350.
         self.initial_jitter = 0.2
         self.model, self.ker_dim = self.init_gp_model(self.X_train, self.Y_train)
         self.param_dim = 4  # This value can be 2, 3 or 4.
+
+    def load_data2(self, test_col,):
+        np.random.seed(1)
+        raw_data = pd.read_csv(filepath_or_buffer=self.file_path)
+        raw_data = raw_data[test_col]
+        data = raw_data.iloc[::2].values
+        X = np.arange(data.shape[0])
+        self.visualise(X.reshape(-1, 1), data.reshape(-1, 1))
+        data = np.vstack((X,  data)).T
+
+        np.random.shuffle(data)
+        n_train = int(self.train_ratio * data.shape[0])
+        X_train = data[:n_train, 0]
+        Y_train = data[:n_train, 1]
+        X_test = data[n_train:, 0]
+        Y_test = data[n_train:, 1]
+        if self.n_test is not None:
+            t = int(X_test.shape[0] / self.n_test)
+            X_test = X_test[np.arange(0, X_test.size, t)]
+            Y_test = Y_test[np.arange(0, Y_test.size, t)]
+        plt.figure(1, figsize=(10, 5))
+        plt.plot(X_train, Y_train, ".", color='b', alpha=0.1, label='Available Measurements')
+        plt.plot(X_test, Y_test, "*", color='b', label='Missing Measurements')
+        print(len(X_train), len(X_test))
+        plt.xlabel("Time")
+        plt.ylabel("Tide Height (m)")
+        plt.legend()
+        plt.show()
+        return X_train.reshape(-1, 1),  Y_train.reshape(-1, 1), X_test.reshape(-1, 1), \
+               Y_test.reshape(-1, 1), X_test.reshape(-1, 1), Y_test.reshape(-1, 1)
 
     def load_univariate_series(self, test_col: str, grd_truth_col: str = None, plot_graph=False,
                                ):
@@ -479,6 +511,31 @@ class PeriodicGPRegression(Functions):
         #display(m)
         ker_dim = len(m.param_array)
         return m, ker_dim
+
+    def visualise(self, X, Y):
+        k = GPy.kern.StdPeriodic(input_dim=1, lengthscale=1, period=450, variance=1.)
+        m = GPy.models.GPRegression(X, Y, k)
+        variance_prior = GPy.priors.LogGaussian(mu=0., sigma=4)
+        lengthscale_prior = GPy.priors.LogGaussian(mu=0., sigma=4.)
+        noise_prior = GPy.priors.LogGaussian(mu=-4., sigma=4.)
+        period_prior = GPy.priors.LogGaussian(mu=5., sigma=4.)
+
+        m.kern.variance.set_prior(variance_prior)
+        m.kern.lengthscale.set_prior(lengthscale_prior)
+        m.kern.period.set_prior(period_prior)
+        m.Gaussian_noise.variance.set_prior(noise_prior)
+
+        m.optimize()
+        display(m)
+        posteriors = np.squeeze(m.posterior_samples_f(X, size=50), axis=1)
+        plt.figure(1, figsize=(5, 5))
+        plt.plot(X, Y, color='b', label='Ground Truth')
+        plt.xlabel("Time")
+        plt.ylabel('Tide Height (m)')
+        plt.plot(X, posteriors[:, 0], alpha=0.1, color='r', label='MAP GP Posterior')
+        plt.plot(X, posteriors[:, 1:], alpha=0.1, color='r', label='_')
+        plt.legend()
+        plt.show()
 
     def log_sample(self, phi: np.ndarray, x: np.ndarray = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """

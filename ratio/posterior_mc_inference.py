@@ -4,6 +4,14 @@ import numpy as np
 import gpflow
 from typing import Union
 import matplotlib.pyplot as plt
+from pylab import *
+import pymc3 as pm
+import theano
+
+theano.config.floatX = 'float32'
+theano.config.compute_test_value = 'raise'
+theano.config.exception_verbosity= 'high'
+
 
 
 class PosteriorMCSampler:
@@ -24,12 +32,21 @@ class PosteriorMCSampler:
         return samples
 
     def _hmc_gpy(self, num_iters, num_chains):
-        mc = GPy.inference.mcmc.hmc.HMC_shortcut(self.gpy_gp)
+        #self.gpy_gp.kern.variance.set_prior(GPy.priors.Gamma.from_EV(25.,150.))
+        #self.gpy_gp.kern.lengthscale.set_prior(GPy.priors.Gamma.from_EV(120., 2000.))
+        self.gpy_gp.kern.lengthscale.fix()
+        self.gpy_gp.kern.variance.fix()
+        self.gpy_gp.Gaussian_noise.variance.fix()
+        print(self.gpy_gp)
+        mc = GPy.inference.mcmc.hmc.HMC(self.gpy_gp, stepsize=1e-1)
         try:
-            t = mc.sample(m_iters=num_iters, hmc_iters=num_chains)
+            t = mc.sample(num_samples=num_iters, hmc_iters=num_chains)
+            plot(t)
+            plt.show()
         except np.linalg.LinAlgError:
             t = None
             logging.warning("GPy HMC Sampling failed - switching to GPFlow")
+            exit()
         return t
 
     def _hmc_gpflow(self, num_iters, num_chains):
@@ -38,15 +55,17 @@ class PosteriorMCSampler:
         self.gpflow_gp.clear()
         # Assign prior - up to this point the project uses LogGaussian prior (0, 2) for all hyperparameters, so I will
         # leave this hard-coded for now todo: change the hard-coding!
-        # self.gpflow_gp.kern.period.prior = gpflow.priors.LogNormal(0, 1000)
-        self.gpflow_gp.kern.lengthscales.prior = gpflow.priors.LogNormal(0, 2)
-        self.gpflow_gp.kern.variance.prior = gpflow.priors.LogNormal(0, 2)
-        self.gpflow_gp.likelihood.variance.prior = gpflow.priors.LogNormal(0, 2)
+        self.gpflow_gp.kern.period.prior = gpflow.priors.LogNormal(5, 16)
+        self.gpflow_gp.kern.lengthscales.prior = gpflow.priors.LogNormal(0, 16)
+        self.gpflow_gp.kern.variance.prior = gpflow.priors.LogNormal(0, 16)
+        self.gpflow_gp.likelihood.variance.prior = gpflow.priors.LogNormal(-4, 16)
         self.gpflow_gp.compile()
-
+        o = gpflow.train.AdamOptimizer(0.01)
+        o.minimize(self.gpflow_gp, maxiter=15)  # start near MAP
         mc = gpflow.train.HMC()
-        t = mc.sample(self.gpflow_gp, num_samples=num_iters, epsilon=5, logprobs=True)
+        t = mc.sample(self.gpflow_gp, num_samples=num_iters, epsilon=0.2, lmax=30, lmin=5,logprobs=True)
         # self.plot_fn_posterior(t)
+        self.save_as_csv(t)
         return t
 
     def _translate(self):
@@ -126,3 +145,30 @@ class PosteriorMCSampler:
 
     def save_as_csv(self, t: Union[pd.DataFrame, pd.Series]):
         t.to_csv('posterior_samples.csv')
+
+
+class PyMC3GP:
+    def __init__(self, X_train, Y_train):
+        self.X_train = X_train
+        self.Y_train = Y_train.reshape(-1)
+
+    def build(self):
+        with pm.Model() as model:
+            w = pm.Lognormal('lengthscale', 0, 4)
+            h2 = pm.Lognormal('variance', 0, 4)
+            # sigma = pm.Lognormal('sigma', 0, 4)
+            p = pm.Lognormal('p', 5, 4)
+
+            f_cov = h2 * pm.gp.cov.Periodic(1, period=p, ls=w)
+            gp = pm.gp.Latent(cov_func=f_cov)
+            f = gp.prior('f', X=self.X_train)
+            s2 = pm.Lognormal('Gaussian_noise', -4, 4)
+            y_ = pm.StudentT('y', mu=f, nu=s2, observed=self.Y_train)
+            #start = pm.find_MAP()
+            step = pm.Metropolis()
+            db = pm.backends.Text('trace')
+            trace = pm.sample(2000, step, chains=1, njobs=1)# start=start)
+
+        pm.traceplot(trace, varnames=['lengthscale', 'variance', 'Gaussian_noise'])
+        plt.show()
+        return trace
